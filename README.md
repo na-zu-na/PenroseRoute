@@ -12,25 +12,28 @@ python -m venv .venv
 
 ## PostgreSQL setup
 
-Create the database and all 14 P0 tables from the project root. The SQL file
-does not create roles or contain credentials:
+Create the database and all 14 P0 tables from the project root. The SQL files
+do not create roles or contain credentials:
 
 ```powershell
-psql -U postgres -d postgres -v database_name=penrose_route -f database/create_database.sql
+psql -U postgres -d postgres -f database/create_database.sql
+psql -U postgres -d penrose_route -f database/create_datatable.sql
 ```
 
-The command creates the database when needed, connects to it, installs the
-required PostgreSQL extensions, and creates the complete schema. Copy
-`backend/.env.example` to `backend/.env` and set `DATABASE_URL` for the API:
+Optionally load the reference/demo data:
+
+```powershell
+psql -U postgres -d penrose_route -f database/reference_data.sql
+```
+
+Copy `backend/.env.example` to `backend/.env` and set `DATABASE_URL` for the API:
 
 ```powershell
 cd backend
 copy .env.example .env
 ```
 
-[`database/create_database.sql`](database/create_database.sql) is the only
-source of truth for database and table creation. See
-[`database/README.md`](database/README.md) for details.
+See [`database/README.md`](database/README.md) for the SQL file boundaries.
 
 ## Run tests
 

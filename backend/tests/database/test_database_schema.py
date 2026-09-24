@@ -3,7 +3,7 @@ import re
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SCHEMA_FILE = PROJECT_ROOT / "database" / "create_database.sql"
+SCHEMA_FILE = PROJECT_ROOT / "database" / "create_datatable.sql"
 EXPECTED_TABLES = {
     "locations",
     "merchants",
@@ -22,17 +22,16 @@ EXPECTED_TABLES = {
 }
 
 
-def test_single_sql_script_creates_database_and_complete_p0_schema() -> None:
+def test_schema_script_creates_the_complete_p0_schema() -> None:
     sql = SCHEMA_FILE.read_text(encoding="utf-8")
-    created_tables = set(re.findall(r"CREATE TABLE ([a-z_]+)", sql))
+    created_tables = set(
+        re.findall(r"CREATE TABLE (?:public\.)?([a-z_]+)", sql)
+    )
 
-    assert "CREATE DATABASE" in sql
-    assert "\\connect :database_name" in sql
-    assert re.search(r"\\connect :database_name\s+BEGIN;", sql)
-    assert sql.rstrip().endswith("COMMIT;")
     assert created_tables == EXPECTED_TABLES
-    assert "CREATE EXTENSION IF NOT EXISTS pgcrypto" in sql
-    assert "CREATE EXTENSION IF NOT EXISTS btree_gist" in sql
+    assert "CREATE SCHEMA public;" not in sql
+    assert "CREATE EXTENSION" in sql and "pgcrypto" in sql
+    assert "CREATE EXTENSION" in sql and "btree_gist" in sql
 
 
 def test_sql_schema_keeps_the_critical_p0_guards() -> None:
