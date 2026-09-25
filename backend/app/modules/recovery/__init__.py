@@ -1,2 +1,1 @@
-"""Recovery workflow and agent orchestration boundary."""
-
+"""Recovery workflows and orchestration boundaries."""

@@ -22,6 +22,14 @@ def test_real_router_requires_authentication_configuration():
     assert response.json()["code"] == "AUTH_NOT_CONFIGURED"
 
 
+def test_deterministic_recovery_requires_authentication_configuration():
+    response = TestClient(app).post(
+        f"/api/incidents/{uuid4()}/deterministic-recovery", json={}
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "AUTH_NOT_CONFIGURED"
+
+
 def test_real_router_has_default_backend_configuration():
     from types import SimpleNamespace
     from app.modules.recovery.application import SqlRecoveryApplication

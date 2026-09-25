@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, get_request_id
 from app.core.responses import success_response
+from app.modules.incidents.workflow import MerchantDelayWorkflow
 from app.modules.resources.parties import PartyService
 from app.schemas.common import ApiResponse, PaginatedData, PaginationParams
 from app.schemas.resources import (
@@ -131,14 +132,15 @@ def update_merchant_ready_time(
     request_id: Annotated[str, Depends(get_request_id)],
     db: Annotated[Session, Depends(get_db)],
 ) -> ApiResponse[MerchantResponse]:
-    merchant = PartyService(db).update_merchant_ready_time(
-        merchant_id,
+    result = MerchantDelayWorkflow(db).assess_delay(
         business_date=request.business_date,
+        merchant_id=merchant_id,
         updated_ready_at=request.updated_ready_at,
         detected_at=request.detected_at,
+        explicit_incident=False,
     )
     return success_response(
-        data=MerchantResponse.model_validate(merchant),
+        data=MerchantResponse.model_validate(result.merchant),
         message="Merchant ready time updated",
         request_id=request_id,
     )

@@ -106,6 +106,43 @@ def test_validator_accepts_complete_feasible_result() -> None:
     assert SolverResultValidator().validate(make_input(), result) == ()
 
 
+def test_delivery_only_result_rejects_wrong_delivery_location() -> None:
+    solver_input = make_input()
+    solver_input = replace(
+        solver_input,
+        orders=(
+            replace(
+                solver_input.orders[0],
+                pickup_location_id=None,
+                required_vehicle_id=VEHICLE_ID,
+                pickup_service_seconds=0,
+            ),
+        ),
+        vehicles=(
+            replace(solver_input.vehicles[0], initial_load_load_units=2),
+        ),
+        location_ids=(PICKUP_ID, DELIVERY_ID, WRONG_LOCATION_ID),
+        distance_matrix_meters=((0, 8_000, 8_000), (8_000, 0, 8_000), (8_000, 8_000, 0)),
+        duration_matrix_seconds=((0, 1_200, 1_200), (1_200, 0, 1_200), (1_200, 1_200, 0)),
+    )
+    stop = replace(
+        make_stop(SolverStopType.DELIVERY, 2, WRONG_LOCATION_ID),
+        sequence_no=1,
+    )
+    route = make_route(stop)
+    result = SolverResult(
+        status=SolverStatus.FEASIBLE,
+        routes=(route,),
+        unassigned_orders=(),
+        total_distance_meters=route.distance_meters,
+        total_duration_seconds=route.duration_seconds,
+        diagnostic=None,
+    )
+
+    codes = {issue.code for issue in SolverResultValidator().validate(solver_input, result)}
+    assert "DELIVERY_LOCATION_MISMATCH" in codes
+
+
 def test_validator_rejects_temporally_unreachable_stop() -> None:
     pickup = make_stop(SolverStopType.PICKUP, 1, PICKUP_ID)
     delivery = replace(

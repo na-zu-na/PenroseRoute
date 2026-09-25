@@ -80,7 +80,7 @@ class SolverResultValidator:
 
             stops_by_order: dict[UUID, list[SolverStop]] = {}
             vehicle = vehicles.get(route.vehicle_id)
-            current_load = 0
+            current_load = vehicle.initial_load_load_units if vehicle is not None else 0
             for stop in route.stops:
                 if stop.order_id not in orders:
                     issues.append(
@@ -227,14 +227,50 @@ class SolverResultValidator:
                 origin_type = (
                     SolverStopType.PICKUP
                     if order.pickup_location_id is not None
-                    else SolverStopType.HANDOVER
+                    else (
+                        SolverStopType.HANDOVER
+                        if order.handover_location_id is not None
+                        else None
+                    )
                 )
-                origin = [stop for stop in stops if stop.stop_type is origin_type]
                 delivery = [
                     stop
                     for stop in stops
                     if stop.stop_type is SolverStopType.DELIVERY
                 ]
+                if origin_type is None:
+                    if len(delivery) != 1 or len(stops) != 1:
+                        issues.append(
+                            ValidationIssue(
+                                code="ORDER_STOP_SET_INVALID",
+                                message=(
+                                    "Delivery-only order requires one delivery: "
+                                    f"{order_id}"
+                                ),
+                            )
+                        )
+                    if delivery and delivery[0].location_id != order.delivery_location_id:
+                        issues.append(
+                            ValidationIssue(
+                                code="DELIVERY_LOCATION_MISMATCH",
+                                message=f"Order delivery location is invalid: {order_id}",
+                            )
+                        )
+                    if (
+                        vehicle is not None
+                        and order.required_vehicle_id != vehicle.vehicle_id
+                    ):
+                        issues.append(
+                            ValidationIssue(
+                                code="REQUIRED_VEHICLE_MISMATCH",
+                                message=(
+                                    "Delivery-only order is on the wrong vehicle: "
+                                    f"{order_id}"
+                                ),
+                            )
+                        )
+                    continue
+                origin = [stop for stop in stops if stop.stop_type is origin_type]
                 if len(origin) != 1 or len(delivery) != 1 or len(stops) != 2:
                     issues.append(
                         ValidationIssue(

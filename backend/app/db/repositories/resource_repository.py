@@ -78,6 +78,15 @@ class ResourceRepository:
         )
         return self.session.scalar(statement)
 
+    def lock_merchant_by_id(self, merchant_id: UUID) -> Merchant | None:
+        statement = (
+            select(Merchant)
+            .where(Merchant.id == merchant_id)
+            .options(joinedload(Merchant.pickup_location))
+            .with_for_update(of=Merchant)
+        )
+        return self.session.scalar(statement)
+
     def get_customer_by_id(self, customer_id: UUID) -> Customer | None:
         statement = (
             select(Customer)

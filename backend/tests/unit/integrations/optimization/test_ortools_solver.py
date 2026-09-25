@@ -250,6 +250,57 @@ def test_solver_supports_handover_precedence_and_recovery_scope() -> None:
     assert SolverResultValidator().validate(data, result) == ()
 
 
+def test_solver_reserves_capacity_for_onboard_delivery_only_order() -> None:
+    onboard = SolverOrder(
+        order_id=ORDER_A,
+        pickup_location_id=None,
+        handover_location_id=None,
+        delivery_location_id=DELIVERY_A,
+        ready_time_seconds=0,
+        delivery_window_start_seconds=100,
+        delivery_window_end_seconds=200,
+        pickup_service_seconds=0,
+        handover_service_seconds=0,
+        delivery_service_seconds=10,
+        demand_load_units=2,
+        required_vehicle_id=VEHICLE_A,
+    )
+    urgent = order(
+        ORDER_B,
+        PICKUP_B,
+        DELIVERY_B,
+        demand=1,
+        window_end=50,
+    )
+    loaded_vehicle = SolverVehicle(
+        vehicle_id=VEHICLE_A,
+        capacity_load_units=2,
+        initial_load_load_units=2,
+        start_location_id=HUB,
+        available_from_seconds=0,
+        available_until_seconds=500,
+    )
+    data = solver_input(
+        orders=(onboard, urgent),
+        vehicles=(loaded_vehicle,),
+        location_ids=(HUB, DELIVERY_A, PICKUP_B, DELIVERY_B),
+        duration_matrix=(
+            (0, 10, 10, 20),
+            (10, 0, 10, 20),
+            (10, 10, 0, 10),
+            (20, 20, 10, 0),
+        ),
+        scope=RecoveryScope.ALL_REMAINING,
+    )
+
+    result = ORToolsSolver().solve(data)
+
+    assert result.status is SolverStatus.FEASIBLE
+    assert [item.order_id for item in result.unassigned_orders] == [ORDER_B]
+    assert [stop.order_id for stop in result.routes[0].stops] == [ORDER_A]
+    assert SolverResultValidator().validate(data, result) == ()
+
+
 def test_solver_preserves_frozen_pickup_and_solves_remaining_delivery() -> None:
     frozen_pickup = SolverStop(
         order_id=ORDER_A,

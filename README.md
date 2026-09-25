@@ -53,6 +53,8 @@ See [`database/README.md`](database/README.md) for the SQL file boundaries.
 
 已提供实际 OR-Tools 求解、异常影响规则、恢复候选入库与独立人工审核接口。默认行程为地理距离估算，结果不会自动生效。没有前端地图或常驻监控进程。
 
+商家延迟可通过 `POST /api/incidents/merchant-delay` 评估；无需 Agent 的确定性恢复使用 `POST /api/incidents/{id}/deterministic-recovery`，需要调度员令牌。`POST /api/incidents/{id}/recovery` 保留 Agent 恢复流程。
+
 完整配置、请求示例、业务 API 和测试边界见 [调度 Agent 使用说明](backend/docs/DISPATCH_AGENT.md)。原有恢复编排设计见 [恢复 Agent 接入说明](backend/docs/AGENT_INTEGRATION.md)。
 
 依据《Recovery Agent 开发任务说明》的逐项核对、本次补全和结构化结果契约见 [Recovery Agent 功能验收](backend/docs/RECOVERY_AGENT_REQUIREMENTS.md)。

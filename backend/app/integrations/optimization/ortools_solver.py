@@ -93,7 +93,7 @@ class ORToolsSolver:
                 if frozen
                 else vehicle.available_from_seconds
             )
-            initial_load = sum(
+            initial_load = vehicle.initial_load_load_units + sum(
                 task.stop.load_change_load_units for task in frozen
             )
             if not 0 <= initial_load <= vehicle.capacity_load_units:
@@ -107,6 +107,31 @@ class ORToolsSolver:
 
         order_nodes: dict[UUID, _OrderNodes] = {}
         for order in solver_input.orders:
+            if (
+                order.pickup_location_id is None
+                and order.handover_location_id is None
+            ):
+                required_vehicle_id = order.required_vehicle_id
+                if required_vehicle_id not in vehicle_index:
+                    raise ValueError(
+                        "delivery-only order references an unavailable vehicle"
+                    )
+                delivery_node = len(nodes)
+                nodes.append(
+                    _Node(
+                        location_id=order.delivery_location_id,
+                        order_id=order.order_id,
+                        stop_type=SolverStopType.DELIVERY,
+                        service_seconds=order.delivery_service_seconds,
+                        load_change_load_units=-order.demand_load_units,
+                    )
+                )
+                order_nodes[order.order_id] = _OrderNodes(
+                    origin_node=None,
+                    delivery_node=delivery_node,
+                    fixed_vehicle_index=vehicle_index[required_vehicle_id],
+                )
+                continue
             origin_type = self._origin_type(order)
             frozen_origin = frozen_by_order.get((order.order_id, origin_type))
             frozen_delivery = frozen_by_order.get(
@@ -323,6 +348,8 @@ class ORToolsSolver:
 
     @staticmethod
     def _origin_type(order: SolverOrder) -> SolverStopType:
+        if order.pickup_location_id is None and order.handover_location_id is None:
+            raise ValueError("delivery-only order has no origin stop")
         return (
             SolverStopType.PICKUP
             if order.pickup_location_id is not None
@@ -333,7 +360,7 @@ class ORToolsSolver:
     def _origin_location(order: SolverOrder) -> UUID:
         location_id = order.pickup_location_id or order.handover_location_id
         if location_id is None:
-            raise ValueError("order origin location is missing")
+            raise ValueError("delivery-only order has no origin location")
         return location_id
 
     @staticmethod

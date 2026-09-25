@@ -107,30 +107,6 @@ def test_merchant_resource_endpoints_and_ready_time_boundary() -> None:
         assert delayed_status.status_code == 422
         assert delayed_status.json()["code"] == "VALIDATION_ERROR"
 
-        non_delay = await client.patch(
-            f"/api/merchants/{merchant_id}/ready-time",
-            json={
-                "business_date": "2026-09-25",
-                "updated_ready_at": "2026-09-25T09:50:00+08:00",
-                "detected_at": "2026-09-25T09:00:00+08:00",
-            },
-        )
-        assert non_delay.status_code == 200
-
-        delay = await client.patch(
-            f"/api/merchants/{merchant_id}/ready-time",
-            json={
-                "business_date": "2026-09-25",
-                "updated_ready_at": "2026-09-25T10:30:00+08:00",
-                "detected_at": "2026-09-25T09:05:00+08:00",
-            },
-        )
-        assert delay.status_code == 409
-        assert delay.json()["code"] == "MERCHANT_DELAY_WORKFLOW_REQUIRED"
-
-        unchanged = await client.get(f"/api/merchants/{merchant_id}")
-        assert unchanged.json()["data"]["operational_ready_at"] == "2026-09-25T09:50:00+08:00"
-
     with api_client() as (client, _):
         asyncio.run(scenario(client))
 

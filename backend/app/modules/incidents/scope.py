@@ -16,3 +16,19 @@ def scope_after_result(current: Scope, solver_status: str) -> Scope | None:
 
 def initial_vehicle_unavailable_scope() -> ReplanningScope:
     return ReplanningScope.AFFECTED_ROUTE
+
+
+def initial_merchant_delay_scope() -> ReplanningScope:
+    return ReplanningScope.AFFECTED_ROUTE
+
+
+def next_replanning_scope(
+    current: ReplanningScope,
+) -> ReplanningScope | None:
+    order = (
+        ReplanningScope.AFFECTED_ROUTE,
+        ReplanningScope.CROSS_ROUTE,
+        ReplanningScope.ALL_REMAINING,
+    )
+    index = order.index(current)
+    return order[index + 1] if index + 1 < len(order) else None

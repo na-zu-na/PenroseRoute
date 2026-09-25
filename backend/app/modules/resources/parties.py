@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -146,30 +146,6 @@ class PartyService:
                 message="Merchant preparation status transition is not allowed",
             )
         merchant.preparation_status = target
-        merchant.updated_at = datetime.now(timezone.utc)
-        self.repository.flush()
-        self.session.commit()
-        return merchant
-
-    def update_merchant_ready_time(
-        self,
-        merchant_id: UUID,
-        *,
-        business_date: date,
-        updated_ready_at: datetime,
-        detected_at: datetime,
-    ) -> Merchant:
-        del business_date, detected_at
-        merchant = self.get_merchant(merchant_id)
-        if (
-            merchant.operational_ready_at is not None
-            and updated_ready_at > merchant.operational_ready_at
-        ):
-            raise Conflict(
-                code="MERCHANT_DELAY_WORKFLOW_REQUIRED",
-                message="A positive ready-time delay must be handled by the incident workflow",
-            )
-        merchant.operational_ready_at = updated_ready_at
         merchant.updated_at = datetime.now(timezone.utc)
         self.repository.flush()
         self.session.commit()

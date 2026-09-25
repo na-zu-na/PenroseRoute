@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db.models import Incident, IncidentAffectedOrder
 from app.db.models.recovery import IncidentStatus, IncidentType
@@ -46,6 +46,31 @@ class IncidentRepository:
             .order_by(IncidentAffectedOrder.created_at, IncidentAffectedOrder.id)
         )
         return list(self.session.scalars(statement))
+
+    def get_incident_with_affected_orders(
+        self, incident_id: UUID
+    ) -> Incident | None:
+        statement = (
+            select(Incident)
+            .where(Incident.id == incident_id)
+            .execution_options(populate_existing=True)
+            .options(
+                joinedload(Incident.incident_location),
+                selectinload(Incident.affected_orders).joinedload(
+                    IncidentAffectedOrder.order
+                ),
+            )
+        )
+        return self.session.scalar(statement)
+
+    def lock_incident_by_id(self, incident_id: UUID) -> Incident | None:
+        statement = (
+            select(Incident)
+            .where(Incident.id == incident_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return self.session.scalar(statement)
 
     def add_incident(self, incident: Incident) -> None:
         self.session.add(incident)

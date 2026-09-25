@@ -41,3 +41,27 @@ class VehicleUnavailableResponse(BaseModel):
 class VehicleIncidentStatusResponse(BaseModel):
     vehicle: VehicleResponse
     incident: VehicleUnavailableResponse
+
+
+class MerchantDelayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_date: date
+    merchant_id: UUID
+    updated_ready_at: AwareDatetime
+    detected_at: AwareDatetime | None = None
+
+
+class MerchantDelayResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    incident_id: UUID
+    incident_type: str
+    business_date: date
+    status: str
+    original_ready_at: AwareDatetime
+    updated_ready_at: AwareDatetime
+    delay_seconds: int
+    requires_replanning: bool
+    affected_order_count: int
+    replanning_scope: str | None

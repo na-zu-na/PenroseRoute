@@ -206,7 +206,7 @@ def test_agent_has_no_db_http_or_business_scope_import():
     assert list(root.glob("*.py"))
     forbidden = ("sqlalchemy", "sqlite3", "app.db", "fastapi", "app.modules", "psycopg", "ortools")
     for p in root.glob("*.py"):
-        for node in ast.walk(ast.parse(p.read_text())):
+        for node in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):
                 names = [n.name for n in node.names]
             elif isinstance(node, ast.ImportFrom):

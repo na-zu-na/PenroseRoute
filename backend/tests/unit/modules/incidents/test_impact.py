@@ -2,8 +2,11 @@ from uuid import uuid4
 
 from app.db.models.recovery import ImpactType, ReplanningScope
 from app.db.models.resources import OrderExecutionStatus, OrderRiskStatus
-from app.modules.incidents.impact import assess_vehicle_order
-from app.modules.incidents.scope import initial_vehicle_unavailable_scope
+from app.modules.incidents.impact import assess_merchant_order, assess_vehicle_order
+from app.modules.incidents.scope import (
+    initial_merchant_delay_scope,
+    initial_vehicle_unavailable_scope,
+)
 
 
 def test_vehicle_impact_classification_uses_execution_facts() -> None:
@@ -67,3 +70,30 @@ def test_vehicle_impact_classification_uses_execution_facts() -> None:
 
 def test_vehicle_unavailable_initial_scope_is_affected_route() -> None:
     assert initial_vehicle_unavailable_scope() is ReplanningScope.AFFECTED_ROUTE
+
+
+def test_merchant_delay_impacts_only_not_picked_up_orders() -> None:
+    order_id = uuid4()
+    route_id = uuid4()
+    direct = assess_merchant_order(
+        order_id=order_id,
+        route_id=route_id,
+        execution_status=OrderExecutionStatus.PLANNED,
+        risk_status=OrderRiskStatus.NORMAL,
+        is_direct=True,
+        requires_replanning=True,
+    )
+    assert direct is not None
+    assert direct.impact_type is ImpactType.WAITING_TIME_UPDATE
+    assert direct.requires_replanning is True
+
+    picked_up = assess_merchant_order(
+        order_id=order_id,
+        route_id=route_id,
+        execution_status=OrderExecutionStatus.PICKED_UP,
+        risk_status=OrderRiskStatus.AT_RISK,
+        is_direct=False,
+        requires_replanning=True,
+    )
+    assert picked_up is None
+    assert initial_merchant_delay_scope() is ReplanningScope.AFFECTED_ROUTE

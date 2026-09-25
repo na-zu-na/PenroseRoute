@@ -65,9 +65,11 @@ class MerchantStatusUpdate(BaseModel):
 
 
 class MerchantReadyTimeUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     business_date: date
     updated_ready_at: AwareDatetime
-    detected_at: AwareDatetime
+    detected_at: AwareDatetime | None = None
 
 
 class MerchantResponse(BaseModel):

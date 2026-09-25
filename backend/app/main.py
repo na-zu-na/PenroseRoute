@@ -32,11 +32,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     return error_response(request, 422, "VALIDATION_ERROR", "请求参数不符合接口约束")
 
 
-from sqlalchemy.exc import IntegrityError, OperationalError
-
-@app.exception_handler(IntegrityError)
-async def database_conflict_handler(request: Request, exc: IntegrityError):
-    return error_response(request, 409, "DATABASE_CONFLICT", "数据状态或并发操作冲突")
+from sqlalchemy.exc import OperationalError
 
 @app.exception_handler(OperationalError)
 async def database_unavailable_handler(request: Request, exc: OperationalError):

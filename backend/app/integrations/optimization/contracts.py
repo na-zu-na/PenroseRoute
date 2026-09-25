@@ -47,14 +47,20 @@ class SolverOrder:
     handover_service_seconds: int
     delivery_service_seconds: int
     demand_load_units: int
+    required_vehicle_id: UUID | None = None
 
     def __post_init__(self) -> None:
-        if (self.pickup_location_id is None) == (
-            self.handover_location_id is None
-        ):
+        origin_count = sum(
+            value is not None
+            for value in (self.pickup_location_id, self.handover_location_id)
+        )
+        delivery_only = origin_count == 0
+        if origin_count > 1 or (delivery_only and self.required_vehicle_id is None):
             raise ValueError(
-                "SolverOrder requires exactly one pickup or handover location"
+                "SolverOrder requires exactly one origin, unless delivery-only work has a required vehicle"
             )
+        if origin_count == 1 and self.required_vehicle_id is not None:
+            raise ValueError("required_vehicle_id is only valid for delivery-only work")
         _require_non_negative(
             ready_time_seconds=self.ready_time_seconds,
             delivery_window_start_seconds=self.delivery_window_start_seconds,
@@ -71,6 +77,10 @@ class SolverOrder:
             raise ValueError("pickup order cannot have handover service time")
         if self.handover_location_id is not None and self.pickup_service_seconds:
             raise ValueError("handover order cannot have pickup service time")
+        if delivery_only and (
+            self.pickup_service_seconds or self.handover_service_seconds
+        ):
+            raise ValueError("delivery-only order cannot have origin service time")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +90,7 @@ class SolverVehicle:
     start_location_id: UUID
     available_from_seconds: int
     available_until_seconds: int
+    initial_load_load_units: int = 0
 
     def __post_init__(self) -> None:
         _require_non_negative(
@@ -88,6 +99,8 @@ class SolverVehicle:
         )
         if self.capacity_load_units <= 0:
             raise ValueError("capacity_load_units must be positive")
+        if not 0 <= self.initial_load_load_units <= self.capacity_load_units:
+            raise ValueError("initial load must be within vehicle capacity")
         if self.available_until_seconds < self.available_from_seconds:
             raise ValueError("vehicle availability end must not precede start")
 
@@ -199,9 +212,11 @@ class SolverInput:
         }
         for order in self.orders:
             referenced_location_ids.add(order.delivery_location_id)
-            referenced_location_ids.add(
+            origin_location_id = (
                 order.pickup_location_id or order.handover_location_id
             )
+            if origin_location_id is not None:
+                referenced_location_ids.add(origin_location_id)
         referenced_location_ids.update(
             frozen.stop.location_id for frozen in self.frozen_tasks
         )
