@@ -35,3 +35,10 @@ class IntegrationError(Exception):
         self.code = code
         self.message = message
         self.data = data
+
+
+class AuthenticationError(Exception):
+    def __init__(self, code: str, message: str, http_status: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.http_status = http_status

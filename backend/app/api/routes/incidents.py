@@ -1,25 +1,89 @@
-from typing import Annotated
+from datetime import date
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, get_request_id
-from app.api.routes.recovery import require_operations_user
 from app.core.responses import success_response
 from app.modules.incidents.workflow import MerchantDelayWorkflow, VehicleIncidentWorkflow
-from app.modules.recovery.deterministic_workflow import RecoveryWorkflow
-from app.schemas.common import ApiResponse
+from app.modules.incidents.queries import IncidentQueryService
+from app.modules.recovery.queries import RecoveryQueryService
+from app.schemas.common import ApiResponse, PaginatedData, PaginationParams
 from app.schemas.incidents import (
+    IncidentAffectedOrderResponse,
+    IncidentDetailResponse,
+    IncidentListItemResponse,
     MerchantDelayRequest,
     MerchantDelayResponse,
     VehicleUnavailableRequest,
     VehicleUnavailableResponse,
 )
-from app.schemas.recovery import StartRecoveryRequest, StartRecoveryResponse
+from app.schemas.recovery import RecoveryPlanDetailResponse
 
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
+
+
+@router.get("")
+def list_incidents(
+    pagination: Annotated[PaginationParams, Depends()],
+    request_id: Annotated[str, Depends(get_request_id)],
+    db: Annotated[Session, Depends(get_db)],
+    business_date: date | None = None,
+    incident_type: Literal["VEHICLE_UNAVAILABLE", "MERCHANT_DELAY"] | None = None,
+    status: Literal["DETECTED", "ASSESSING", "REPLANNING", "REVIEW", "RESOLVED"] | None = None,
+) -> ApiResponse[PaginatedData[IncidentListItemResponse]]:
+    items, total = IncidentQueryService(db).list_incidents(
+        page=pagination.page, page_size=pagination.page_size,
+        business_date=business_date, incident_type=incident_type, status=status,
+    )
+    return success_response(
+        data=PaginatedData.from_items(
+            items=[IncidentListItemResponse.model_validate(item) for item in items],
+            page=pagination.page, page_size=pagination.page_size, total=total,
+        ),
+        message="Incidents retrieved", request_id=request_id,
+    )
+
+
+@router.get("/{incident_id}")
+def get_incident(
+    incident_id: UUID,
+    request_id: Annotated[str, Depends(get_request_id)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ApiResponse[IncidentDetailResponse]:
+    return success_response(
+        data=IncidentDetailResponse.model_validate(IncidentQueryService(db).get_detail(incident_id)),
+        message="Incident retrieved", request_id=request_id,
+    )
+
+
+@router.get("/{incident_id}/affected-orders")
+def list_affected_orders(
+    incident_id: UUID,
+    request_id: Annotated[str, Depends(get_request_id)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ApiResponse[list[IncidentAffectedOrderResponse]]:
+    items = IncidentQueryService(db).list_affected_orders(incident_id)
+    return success_response(
+        data=[IncidentAffectedOrderResponse.model_validate(item) for item in items],
+        message="Incident affected-order snapshots retrieved", request_id=request_id,
+    )
+
+
+@router.get("/{incident_id}/recovery-plans")
+def list_incident_recovery_plans(
+    incident_id: UUID,
+    request_id: Annotated[str, Depends(get_request_id)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ApiResponse[list[RecoveryPlanDetailResponse]]:
+    items = RecoveryQueryService(db).list_attempts(incident_id)
+    return success_response(
+        data=[RecoveryPlanDetailResponse.model_validate(item) for item in items],
+        message="Recovery attempts retrieved", request_id=request_id,
+    )
 
 
 @router.post("/vehicle-unavailable", status_code=status.HTTP_201_CREATED)
@@ -63,36 +127,5 @@ def report_merchant_delay(
         data=MerchantDelayResponse.model_validate(result),
         code="MERCHANT_DELAY_ASSESSED",
         message="Merchant delay assessed",
-        request_id=request_id,
-    )
-
-
-@router.post(
-    "/{incident_id}/deterministic-recovery",
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_operations_user)],
-)
-def start_recovery(
-    incident_id: UUID,
-    request: StartRecoveryRequest,
-    request_id: Annotated[str, Depends(get_request_id)],
-    db: Annotated[Session, Depends(get_db)],
-) -> ApiResponse[StartRecoveryResponse]:
-    del request
-    result = RecoveryWorkflow(db).start(incident_id)
-    code = (
-        "RECOVERY_PENDING_REVIEW"
-        if result.outcome == "PENDING_REVIEW"
-        else "NO_FEASIBLE_RECOVERY"
-    )
-    message = (
-        "A valid recovery candidate is ready for dispatcher review"
-        if result.outcome == "PENDING_REVIEW"
-        else "No feasible recovery was found; manual intervention is required"
-    )
-    return success_response(
-        data=StartRecoveryResponse.model_validate(result),
-        code=code,
-        message=message,
         request_id=request_id,
     )

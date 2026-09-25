@@ -1,9 +1,11 @@
-from datetime import date
+from datetime import date, datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from app.schemas.resources import LocationInput, VehicleResponse
+from app.schemas.recovery import RecoveryAttemptSummary
 
 
 class VehicleUnavailableRequest(BaseModel):
@@ -65,3 +67,49 @@ class MerchantDelayResponse(BaseModel):
     requires_replanning: bool
     affected_order_count: int
     replanning_scope: str | None
+
+
+class IncidentListItemResponse(BaseModel):
+    id: UUID
+    incident_code: str
+    incident_type: str
+    status: str
+    business_date: date
+    base_delivery_plan_id: UUID
+    vehicle_route_id: UUID | None
+    vehicle_id: UUID | None
+    merchant_id: UUID | None
+    detected_at: datetime
+
+
+class IncidentDetailResponse(IncidentListItemResponse):
+    base_plan_code: str
+    incident_location_id: UUID | None
+    original_ready_at: datetime | None
+    updated_ready_at: datetime | None
+    delay_seconds: int | None
+    resolved_at: datetime | None
+    detected_by: str
+    details: dict[str, Any] | None
+    requires_replanning: bool
+    affected_order_count: int
+    handover_order_count: int
+    impact_summary: dict[str, int]
+    recovery_attempts: list[RecoveryAttemptSummary]
+
+
+class IncidentAffectedOrderResponse(BaseModel):
+    id: UUID
+    incident_id: UUID
+    order_id: UUID
+    original_vehicle_route_id: UUID | None
+    execution_status_snapshot: str
+    risk_status_snapshot: str
+    was_picked_up: bool
+    was_completed: bool
+    requires_replanning: bool
+    handover_required: bool
+    impact_type: str
+    impact_reason: str
+    assessed_at: datetime
+    created_at: datetime

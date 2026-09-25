@@ -6,7 +6,6 @@ from fastapi.responses import JSONResponse
 
 from app.api.error_handlers import register_error_handlers
 from app.api.router import api_router
-from app.integrations.agent.contracts import RecoveryError
 
 
 app = FastAPI(title="PenroseRoute API")
@@ -19,11 +18,6 @@ def error_response(request: Request, status: int, code: str, message: str):
         "success": False, "code": code, "message": message, "data": None,
         "request_id": getattr(request.state, "request_id", None) or "req_" + uuid4().hex,
     })
-
-
-@app.exception_handler(RecoveryError)
-async def recovery_error_handler(request: Request, exc: RecoveryError):
-    return error_response(request, exc.http_status, exc.code, str(exc))
 
 
 @app.exception_handler(RequestValidationError)

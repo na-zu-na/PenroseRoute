@@ -1,5 +1,7 @@
 """Only business rules own scope transitions; the Agent cannot call this module."""
-from app.integrations.agent.contracts import Scope
+from typing import Literal
+
+Scope = Literal["AFFECTED_ROUTE", "CROSS_ROUTE", "ALL_REMAINING"]
 from app.db.models.recovery import ReplanningScope
 
 SCOPES: tuple[Scope, ...] = ("AFFECTED_ROUTE", "CROSS_ROUTE", "ALL_REMAINING")

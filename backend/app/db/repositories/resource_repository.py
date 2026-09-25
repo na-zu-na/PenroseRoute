@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import Customer, Location, Merchant, Order
+from app.db.models.planning import DeliveryPlan, DeliveryPlanOrder, DeliveryPlanStatus
 
 
 class ResourceRepository:
@@ -26,6 +27,60 @@ class ResourceRepository:
             .order_by(Order.order_code)
         )
         return list(self.session.scalars(statement))
+
+    def list_orders(
+        self, *, page: int, page_size: int, business_date: date | None = None,
+        execution_status: str | None = None, risk_status: str | None = None,
+        merchant_id: UUID | None = None,
+    ) -> list[Order]:
+        statement = select(Order).options(
+            joinedload(Order.merchant), joinedload(Order.customer),
+            joinedload(Order.pickup_location), joinedload(Order.delivery_location),
+        )
+        statement = self._filter_orders(statement, business_date, execution_status, risk_status, merchant_id)
+        return list(self.session.scalars(statement.order_by(Order.order_code).offset((page - 1) * page_size).limit(page_size)))
+
+    def count_orders(
+        self, *, business_date: date | None = None,
+        execution_status: str | None = None, risk_status: str | None = None,
+        merchant_id: UUID | None = None,
+    ) -> int:
+        statement = self._filter_orders(
+            select(func.count()).select_from(Order), business_date,
+            execution_status, risk_status, merchant_id,
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    @staticmethod
+    def _filter_orders(statement, business_date, execution_status, risk_status, merchant_id):
+        if business_date is not None:
+            statement = statement.where(Order.business_date == business_date)
+        if execution_status is not None:
+            statement = statement.where(Order.execution_status == execution_status)
+        if risk_status is not None:
+            statement = statement.where(Order.risk_status == risk_status)
+        if merchant_id is not None:
+            statement = statement.where(Order.merchant_id == merchant_id)
+        return statement
+
+    def get_order_by_id(self, order_id: UUID) -> Order | None:
+        return self.session.scalar(
+            select(Order).where(Order.id == order_id).options(
+                joinedload(Order.merchant), joinedload(Order.customer),
+                joinedload(Order.pickup_location), joinedload(Order.delivery_location),
+            )
+        )
+
+    def get_current_order_membership(self, order_id: UUID) -> tuple[DeliveryPlanOrder, DeliveryPlan] | None:
+        return self.session.execute(
+            select(DeliveryPlanOrder, DeliveryPlan)
+            .join(DeliveryPlan, DeliveryPlanOrder.delivery_plan_id == DeliveryPlan.id)
+            .options(joinedload(DeliveryPlanOrder.vehicle_route))
+            .where(
+                DeliveryPlanOrder.order_id == order_id,
+                DeliveryPlan.status == DeliveryPlanStatus.CURRENT,
+            )
+        ).one_or_none()
 
     def get_location_by_code(self, location_code: str) -> Location | None:
         return self.session.scalar(

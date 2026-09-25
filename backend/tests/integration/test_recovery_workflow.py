@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.auth import Principal
 from app.api.dependencies import get_db
 from app.api.routes.recovery import require_operations_user
 from app.db.models import (
@@ -70,7 +71,7 @@ def recovery_client() -> Iterator[tuple[httpx.AsyncClient, Session]]:
         yield session
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[require_operations_user] = lambda: "dispatcher"
+    app.dependency_overrides[require_operations_user] = lambda: Principal("dispatcher-test", "dispatcher")
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
         base_url="http://testserver",
@@ -149,7 +150,7 @@ def test_recovery_expands_only_after_infeasible_and_builds_handover_candidate(
         async def scenario() -> tuple[str, dict]:
             incident_id = await create_incident(client)
             response = await client.post(
-                f"/api/incidents/{incident_id}/deterministic-recovery", json={}
+                f"/api/incidents/{incident_id}/recovery", json={}
             )
             assert response.status_code == 201, response.text
             return incident_id, response.json()
@@ -218,7 +219,7 @@ def test_recovery_solver_error_persists_one_attempt_and_stops(monkeypatch) -> No
         async def scenario() -> tuple[str, httpx.Response]:
             incident_id = await create_incident(client)
             response = await client.post(
-                f"/api/incidents/{incident_id}/deterministic-recovery", json={}
+                f"/api/incidents/{incident_id}/recovery", json={}
             )
             return incident_id, response
 
@@ -260,7 +261,7 @@ def test_all_infeasible_scopes_are_persisted_without_candidate(monkeypatch) -> N
         async def scenario() -> tuple[str, httpx.Response]:
             incident_id = await create_incident(client)
             response = await client.post(
-                f"/api/incidents/{incident_id}/deterministic-recovery", json={}
+                f"/api/incidents/{incident_id}/recovery", json={}
             )
             return incident_id, response
 
@@ -314,7 +315,7 @@ def test_invalid_result_is_persisted_and_does_not_expand_again(monkeypatch) -> N
         async def scenario() -> tuple[str, httpx.Response]:
             incident_id = await create_incident(client)
             response = await client.post(
-                f"/api/incidents/{incident_id}/deterministic-recovery", json={}
+                f"/api/incidents/{incident_id}/recovery", json={}
             )
             return incident_id, response
 
@@ -474,7 +475,7 @@ def test_recovery_rejects_execution_fact_changed_during_solver(monkeypatch) -> N
         async def scenario() -> tuple[str, httpx.Response]:
             incident_id = await create_incident(client)
             return incident_id, await client.post(
-                f"/api/incidents/{incident_id}/deterministic-recovery", json={}
+                f"/api/incidents/{incident_id}/recovery", json={}
             )
 
         incident_id, response = asyncio.run(scenario())
@@ -525,7 +526,7 @@ def test_candidate_preserves_started_route_status_and_start_time() -> None:
 
         async def scenario() -> httpx.Response:
             incident_id = await create_incident(client)
-            return await client.post(f"/api/incidents/{incident_id}/deterministic-recovery", json={})
+            return await client.post(f"/api/incidents/{incident_id}/recovery", json={})
 
         response = asyncio.run(scenario())
         assert response.status_code == 201, response.text
@@ -543,3 +544,344 @@ def test_candidate_preserves_started_route_status_and_start_time() -> None:
         assert route.actual_start_at == datetime.fromisoformat(
             "2026-09-25T08:58:00+08:00"
         )
+
+
+def _p0_decision_override(session: Session):
+    from app.api.routes.decisions import get_decision_service
+    from app.modules.decisions.service import DeterministicDecisionService
+
+    connection = session.get_bind()
+    app.dependency_overrides[get_decision_service] = lambda: DeterministicDecisionService(
+        lambda: Session(
+            bind=connection,
+            autoflush=False,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        ),
+        clock=lambda: datetime.fromisoformat("2026-09-25T10:06:00+08:00"),
+    )
+
+
+def test_dispatcher_approve_atomically_switches_current_plan() -> None:
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        _p0_decision_override(session)
+
+        async def scenario():
+            incident_id = await create_incident(client)
+            recovery = await client.post(
+                f"/api/incidents/{incident_id}/recovery", json={}
+            )
+            assert recovery.status_code == 201, recovery.text
+            data = recovery.json()["data"]
+            approval = await client.post(
+                f"/api/recovery-plans/{data['reviewable_recovery_plan_id']}/approve",
+                json={"decision_reason": "Dispatcher accepted handover"},
+            )
+            second = await client.post(
+                f"/api/recovery-plans/{data['reviewable_recovery_plan_id']}/approve",
+                json={"decision_reason": "Duplicate decision"},
+            )
+            return incident_id, data, approval, second
+
+        incident_id, data, approval, second = asyncio.run(scenario())
+        assert approval.status_code == 200, approval.text
+        assert approval.json()["code"] == "RECOVERY_APPROVED"
+        assert second.status_code == 409
+        assert second.json()["code"] == "RECOVERY_ALREADY_DECIDED"
+        session.expire_all()
+        candidate = session.get(DeliveryPlan, data["candidate_delivery_plan_id"])
+        base = session.get(DeliveryPlan, candidate.parent_plan_id)
+        incident = session.get(Incident, incident_id)
+        decided = session.get(RecoveryPlan, data["reviewable_recovery_plan_id"])
+        assert base.status is DeliveryPlanStatus.SUPERSEDED
+        assert candidate.status is DeliveryPlanStatus.CURRENT
+        assert incident.status.value == "RESOLVED"
+        assert decided.dispatcher_decision.value == "APPROVE"
+
+
+def test_dispatcher_reject_cancels_candidate_but_keeps_base_current() -> None:
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        _p0_decision_override(session)
+
+        async def scenario():
+            incident_id = await create_incident(client)
+            recovery = await client.post(
+                f"/api/incidents/{incident_id}/recovery", json={}
+            )
+            data = recovery.json()["data"]
+            rejection = await client.post(
+                f"/api/recovery-plans/{data['reviewable_recovery_plan_id']}/reject",
+                json={"decision_reason": "Handover is not viable"},
+            )
+            return incident_id, data, rejection
+
+        incident_id, data, rejection = asyncio.run(scenario())
+        assert rejection.status_code == 200, rejection.text
+        assert rejection.json()["code"] == "RECOVERY_REJECTED"
+        session.expire_all()
+        candidate = session.get(DeliveryPlan, data["candidate_delivery_plan_id"])
+        base = session.get(DeliveryPlan, candidate.parent_plan_id)
+        assert candidate.status is DeliveryPlanStatus.CANCELLED
+        assert base.status is DeliveryPlanStatus.CURRENT
+        assert session.get(Incident, incident_id).status.value == "ASSESSING"
+
+
+def test_dispatcher_modify_creates_linked_deterministic_attempt() -> None:
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        active_vehicle = session.get(Vehicle, "50000000-0000-0000-0000-000000000001")
+        onboard_order = session.get(Order, "40000000-0000-0000-0000-000000000002")
+        assert active_vehicle is not None and onboard_order is not None
+        active_vehicle.status = ResourceStatus.ACTIVE
+        onboard_order.execution_status = OrderExecutionStatus.PICKED_UP
+        session.commit()
+        _p0_decision_override(session)
+
+        async def scenario():
+            incident_id = await create_incident(client)
+            recovery = await client.post(
+                f"/api/incidents/{incident_id}/recovery", json={}
+            )
+            data = recovery.json()["data"]
+            modification = await client.post(
+                f"/api/recovery-plans/{data['reviewable_recovery_plan_id']}/modify",
+                json={"decision_reason": "Try the next deterministic scope"},
+            )
+            return incident_id, data, modification
+
+        incident_id, data, modification = asyncio.run(scenario())
+        assert modification.status_code == 200, modification.text
+        assert modification.json()["code"] == "RECOVERY_MODIFICATION_PROCESSED"
+        session.expire_all()
+        attempts = list(session.scalars(
+            select(RecoveryPlan).where(RecoveryPlan.incident_id == incident_id)
+            .order_by(RecoveryPlan.attempt_no)
+        ))
+        old = session.get(RecoveryPlan, data["reviewable_recovery_plan_id"])
+        assert old.dispatcher_decision.value == "MODIFY"
+        assert session.get(DeliveryPlan, old.candidate_delivery_plan_id).status is DeliveryPlanStatus.CANCELLED
+        assert attempts[-1].previous_recovery_plan_id == old.id
+        assert attempts[-1].replanning_scope is ReplanningScope.ALL_REMAINING
+        assert attempts[-1].status is RecoveryPlanStatus.PENDING_REVIEW
+
+
+def test_dispatcher_modify_at_max_scope_has_no_side_effects() -> None:
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        active_vehicle = session.get(Vehicle, "50000000-0000-0000-0000-000000000001")
+        onboard_order = session.get(Order, "40000000-0000-0000-0000-000000000002")
+        active_vehicle.status = ResourceStatus.ACTIVE
+        onboard_order.execution_status = OrderExecutionStatus.PICKED_UP
+        session.commit()
+        _p0_decision_override(session)
+
+        async def scenario():
+            incident_id = await create_incident(client)
+            recovery = await client.post(
+                f"/api/incidents/{incident_id}/recovery", json={}
+            )
+            first_id = recovery.json()["data"]["reviewable_recovery_plan_id"]
+            modified = await client.post(
+                f"/api/recovery-plans/{first_id}/modify",
+                json={"decision_reason": "Try broader scope"},
+            )
+            assert modified.status_code == 200, modified.text
+            final_id = modified.json()["data"]["new_recovery_plan_id"]
+            exhausted = await client.post(
+                f"/api/recovery-plans/{final_id}/modify",
+                json={"decision_reason": "Try beyond maximum"},
+            )
+            return incident_id, final_id, exhausted
+
+        incident_id, final_id, exhausted = asyncio.run(scenario())
+        assert exhausted.status_code == 409
+        assert exhausted.json()["code"] == "RECOVERY_SCOPE_EXHAUSTED"
+        session.expire_all()
+        final = session.get(RecoveryPlan, final_id)
+        assert final.status is RecoveryPlanStatus.PENDING_REVIEW
+        assert session.get(DeliveryPlan, final.candidate_delivery_plan_id).status is DeliveryPlanStatus.CANDIDATE
+        assert session.get(Incident, incident_id).status.value == "REVIEW"
+
+
+def test_dispatcher_cannot_approve_inconsistent_candidate() -> None:
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        _p0_decision_override(session)
+
+        async def setup():
+            incident_id = await create_incident(client)
+            recovery = await client.post(
+                f"/api/incidents/{incident_id}/recovery", json={}
+            )
+            return incident_id, recovery.json()["data"]
+
+        incident_id, data = asyncio.run(setup())
+        candidate = session.get(DeliveryPlan, data["candidate_delivery_plan_id"])
+        candidate.assigned_order_count += 1
+        session.commit()
+
+        async def decide():
+            return await client.post(
+                f"/api/recovery-plans/{data['reviewable_recovery_plan_id']}/approve",
+                json={"decision_reason": "Approve malformed snapshot"},
+            )
+
+        response = asyncio.run(decide())
+        assert response.status_code == 409
+        assert response.json()["code"] == "CANDIDATE_PLAN_INVALID"
+        session.expire_all()
+        assert session.get(DeliveryPlan, candidate.parent_plan_id).status is DeliveryPlanStatus.CURRENT
+        assert session.get(RecoveryPlan, data["reviewable_recovery_plan_id"]).status is RecoveryPlanStatus.PENDING_REVIEW
+        assert session.get(Incident, incident_id).status.value == "REVIEW"
+
+
+def test_approval_database_failure_rolls_back_every_state_change() -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from app.modules.decisions.service import DeterministicDecisionService
+
+    with recovery_client() as (client, session):
+        prepare_route(session)
+
+        async def setup():
+            incident_id = await create_incident(client)
+            recovery = await client.post(
+                f"/api/incidents/{incident_id}/recovery", json={}
+            )
+            return incident_id, recovery.json()["data"]
+
+        incident_id, data = asyncio.run(setup())
+        bad_clock = lambda: datetime.fromisoformat("2026-09-25T09:00:00+08:00")
+        service = DeterministicDecisionService(
+            lambda: Session(
+                bind=session.get_bind(), autoflush=False, expire_on_commit=False,
+                join_transaction_mode="create_savepoint",
+            ),
+            clock=bad_clock,
+        )
+        with pytest.raises(IntegrityError):
+            service.decide(
+                data["reviewable_recovery_plan_id"], "APPROVE", "Premature approval", "dispatcher-test"
+            )
+        session.expire_all()
+        candidate = session.get(DeliveryPlan, data["candidate_delivery_plan_id"])
+        assert candidate.status is DeliveryPlanStatus.CANDIDATE
+        assert session.get(DeliveryPlan, candidate.parent_plan_id).status is DeliveryPlanStatus.CURRENT
+        assert session.get(RecoveryPlan, data["reviewable_recovery_plan_id"]).status is RecoveryPlanStatus.PENDING_REVIEW
+        assert session.get(Incident, incident_id).status.value == "REVIEW"
+
+
+def test_concurrent_transactions_cannot_lock_the_same_recovery() -> None:
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    from app.db.repositories.recovery_repository import RecoveryRepository
+
+    seed_recovery_id = "e0000000-0000-0000-0000-000000000001"
+    with engine.connect() as first_connection, engine.connect() as second_connection:
+        first_tx = first_connection.begin()
+        second_tx = second_connection.begin()
+        try:
+            with Session(bind=first_connection) as first, Session(bind=second_connection) as second:
+                assert RecoveryRepository(first).lock_recovery_plan_for_decision(seed_recovery_id)
+                second.execute(text("SET LOCAL lock_timeout = '100ms'"))
+                with pytest.raises(OperationalError) as blocked:
+                    RecoveryRepository(second).lock_recovery_plan_for_decision(seed_recovery_id)
+                assert blocked.value.orig.sqlstate == "55P03"
+        finally:
+            second_tx.rollback()
+            first_tx.rollback()
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_code"),
+    [("ERROR", "RECOVERY_SOLVER_ERROR"), ("INVALID", "RECOVERY_VALIDATION_FAILED")],
+)
+def test_modify_failure_keeps_decision_and_stops_without_candidate(
+    monkeypatch, failure_kind: str, expected_code: str
+) -> None:
+    from app.modules.recovery import deterministic_orchestration as orchestration
+
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        active_vehicle = session.get(Vehicle, "50000000-0000-0000-0000-000000000001")
+        onboard_order = session.get(Order, "40000000-0000-0000-0000-000000000002")
+        active_vehicle.status = ResourceStatus.ACTIVE
+        onboard_order.execution_status = OrderExecutionStatus.PICKED_UP
+        session.commit()
+        _p0_decision_override(session)
+
+        async def setup():
+            incident_id = await create_incident(client)
+            recovery = await client.post(
+                f"/api/incidents/{incident_id}/recovery", json={}
+            )
+            assert recovery.status_code == 201, recovery.text
+            return incident_id, recovery.json()["data"]
+
+        incident_id, data = asyncio.run(setup())
+        if failure_kind == "ERROR":
+            monkeypatch.setattr(
+                orchestration.ORToolsSolver,
+                "solve",
+                lambda *_: SolverResult(
+                    status=SolverStatus.ERROR,
+                    routes=(),
+                    unassigned_orders=(),
+                    total_distance_meters=0,
+                    total_duration_seconds=0,
+                    diagnostic="Forced solver failure",
+                ),
+            )
+        else:
+            monkeypatch.setattr(
+                orchestration.SolverResultValidator,
+                "validate",
+                lambda *_: (ValidationIssue(code="FORCED_INVALID", message="Invalid result"),),
+            )
+
+        async def modify():
+            return await client.post(
+                f"/api/recovery-plans/{data['reviewable_recovery_plan_id']}/modify",
+                json={"decision_reason": "Retry deterministically"},
+            )
+
+        response = asyncio.run(modify())
+        assert response.status_code == 500
+        assert response.json()["code"] == expected_code
+        session.expire_all()
+        attempts = list(session.scalars(
+            select(RecoveryPlan).where(RecoveryPlan.incident_id == incident_id)
+            .order_by(RecoveryPlan.attempt_no)
+        ))
+        assert attempts[-2].dispatcher_decision.value == "MODIFY"
+        assert session.get(DeliveryPlan, attempts[-2].candidate_delivery_plan_id).status is DeliveryPlanStatus.CANCELLED
+        assert attempts[-1].status is RecoveryPlanStatus.DRAFT
+        assert attempts[-1].candidate_delivery_plan_id is None
+        assert session.get(Incident, incident_id).status.value == "REPLANNING"
+
+
+def test_modify_rejects_manual_route_fields() -> None:
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        _p0_decision_override(session)
+
+        async def scenario():
+            incident_id = await create_incident(client)
+            recovery = await client.post(
+                f"/api/incidents/{incident_id}/recovery", json={}
+            )
+            recovery_id = recovery.json()["data"]["reviewable_recovery_plan_id"]
+            response = await client.post(
+                f"/api/recovery-plans/{recovery_id}/modify",
+                json={"decision_reason": "Change route", "route_stops": []},
+            )
+            return recovery_id, response
+
+        recovery_id, response = asyncio.run(scenario())
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_ERROR"
+        session.expire_all()
+        assert session.get(RecoveryPlan, recovery_id).status is RecoveryPlanStatus.PENDING_REVIEW

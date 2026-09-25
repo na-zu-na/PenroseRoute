@@ -3,14 +3,20 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 import json
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from app.main import app
+from app.api.error_handlers import register_error_handlers
+from app.api.router import api_router
+from app.api.routes.dispatch import router as dispatch_router
+from app.api.routes.operations import agent_router
+from app.integrations.agent.contracts import RecoveryError
 from app.api.auth import Principal, authenticate_dispatch_user
 from app.api.routes.dispatch import get_dispatch_service
 from app.api.routes.operations import get_incident_service
 from app.api.routes.decisions import get_decision_service
-from app.api.routes.recovery import get_recovery_workflow
+from app.api.routes.recovery import get_agent_recovery_workflow
 from app.core.config import Settings
 from app.db.models import VehicleRoute, Vehicle, Driver, VehicleDriverAssignment
 from app.modules.dispatch.service import DispatchService
@@ -24,6 +30,23 @@ from app.modules.recovery.orchestration import RecoveryOrchestrator
 from app.modules.recovery.workflow import RecoveryWorkflow
 from app.modules.recovery.evidence import project_evidence
 from app.integrations.optimization.solver import solve, validate
+
+
+# These legacy Agent/Dispatch endpoints are intentionally absent from the P0 app.
+# Mount them only in their isolated compatibility tests.
+app = FastAPI()
+register_error_handlers(app)
+app.include_router(api_router)
+app.include_router(dispatch_router, prefix="/api")
+app.include_router(agent_router, prefix="/api")
+
+
+@app.exception_handler(RecoveryError)
+async def legacy_recovery_error(request: Request, error: RecoveryError):
+    return JSONResponse(status_code=error.http_status, content={
+        "success": False, "code": error.code, "message": str(error),
+        "data": None, "request_id": getattr(request.state, "request_id", "legacy-test"),
+    })
 
 @pytest.fixture(autouse=True)
 def restore_overrides():
@@ -43,7 +66,7 @@ def test_real_http_end_to_end_dispatch_recovery_approval(database):
         get_dispatch_service: lambda: service,
         get_incident_service: lambda: IncidentService(sessions, clock=lambda: now),
         get_decision_service: lambda: DecisionService(sessions, clock=lambda: now+timedelta(seconds=90)),
-        get_recovery_workflow: lambda: recovery})
+        get_agent_recovery_workflow: lambda: recovery})
     client = TestClient(app)
     generated = planning.generate(day, "alice")
     plan_id = generated["plan_id"]
@@ -75,7 +98,7 @@ def test_real_http_end_to_end_dispatch_recovery_approval(database):
     for field, value in recovery_data["recovery_evidence"]["after"].items():
         assert proposal["candidate_plan"][field] == value
     recovery_id = result["data"]["context"]["recovery_plan_id"]
-    response = client.post(f"/api/recovery-plans/{recovery_id}/approve", json={"reason": "调度员确认接手"})
+    response = client.post(f"/api/recovery-plans/{recovery_id}/approve", json={"decision_reason": "调度员确认接手"})
     assert response.status_code == 200 and response.json()["data"]["candidate_status"] == "CURRENT"
 
 
@@ -89,5 +112,5 @@ def test_real_api_auth_and_reader_permissions(monkeypatch):
     assert client.post("/api/agent/dispatch", json={"message": "今天状态"}).status_code == 401
     response = client.post("/api/agent/dispatch", headers={"Authorization": "Bearer "+key}, json={"message": "生成恢复方案"})
     assert response.status_code == 403 and response.json()["code"] == "DISPATCH_FORBIDDEN"
-    response = client.post(f"/api/recovery-plans/{uuid4()}/approve", headers={"Authorization": "Bearer "+key}, json={"reason": "test"})
+    response = client.post(f"/api/recovery-plans/{uuid4()}/approve", headers={"Authorization": "Bearer "+key}, json={"decision_reason": "test"})
     assert response.status_code == 403

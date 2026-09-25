@@ -12,8 +12,6 @@ from app.api.dependencies import get_db, get_request_id
 from app.api.routes.recovery import require_operations_user
 from app.core.responses import success_response
 from app.db.models.resources import OrderExecutionStatus, OrderRiskStatus
-from app.modules.dispatch.queries import DispatchQueries
-from app.modules.incidents.service import IncidentService
 from app.modules.operations.queries import OperationsQueryService
 from app.schemas.common import ApiResponse, PaginatedData, PaginationParams
 from app.schemas.operations import (
@@ -144,10 +142,12 @@ def sessions():
 
 
 def get_queries():
+    from app.modules.dispatch.queries import DispatchQueries
     return DispatchQueries(sessions())
 
 
 def get_incident_service():
+    from app.modules.incidents.service import IncidentService
     return IncidentService(sessions())
 
 

@@ -7,7 +7,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from app.api.dependencies import ensure_request_id
-from app.core.errors import BusinessError, Conflict, IntegrationError, NotFound
+from app.core.errors import AuthenticationError, BusinessError, Conflict, IntegrationError, NotFound
 from app.core.responses import error_response
 
 
@@ -34,6 +34,10 @@ def _json_error(
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(AuthenticationError)
+    async def authentication_error_handler(request: Request, error: AuthenticationError) -> JSONResponse:
+        return _json_error(request, status_code=error.http_status, code=error.code, message=str(error))
+
     @app.middleware("http")
     async def request_id_middleware(
         request: Request,

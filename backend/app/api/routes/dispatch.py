@@ -34,11 +34,11 @@ def get_dispatch_service(request: Request):
         if not settings.bedrock_model_id:
             raise RecoveryError("DISPATCH_NOT_CONFIGURED", "请配置 BEDROCK_MODEL_ID", 503)
         planner = intent_planner(settings.bedrock_model_id, settings.aws_region)
-    from app.api.routes.recovery import get_recovery_workflow
+    from app.api.routes.recovery import get_agent_recovery_workflow
     return DispatchService(DispatchQueries(SessionLocal),
         codec=ContextCodec(settings.dispatch_context_secret.get_secret_value()), planner=planner,
         timezone=settings.business_timezone,
-        recovery=get_recovery_workflow(request))
+        recovery=get_agent_recovery_workflow(request))
 
 
 @router.post("/dispatch")

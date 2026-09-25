@@ -1,17 +1,19 @@
-from uuid import UUID, uuid4
+from uuid import UUID
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.api.auth import Principal
-from app.api.routes.recovery import require_operations_user, get_recovery_workflow
-from app.modules.decisions.service import DecisionService
+from app.api.dependencies import get_request_id
+from app.api.routes.recovery import require_operations_user
+from app.core.responses import success_response
+from app.modules.decisions.service import DeterministicDecisionService
 
 router = APIRouter(prefix="/recovery-plans", tags=["Human decisions"])
 
 class DecisionCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    reason: str = Field(min_length=1, max_length=2000)
+    decision_reason: str = Field(min_length=1, max_length=2000)
 
-    @field_validator("reason")
+    @field_validator("decision_reason")
     @classmethod
     def nonblank(cls, value):
         if not value.strip():
@@ -21,27 +23,32 @@ class DecisionCommand(BaseModel):
 
 def get_decision_service():
     from app.db.session import SessionLocal
-    return DecisionService(SessionLocal)
+    return DeterministicDecisionService(SessionLocal)
 
 
-def envelope(data):
-    return {"success": True, "code": "RECOVERY_DECIDED", "message": "人工决定已保存", "data": data, "request_id": "req_"+uuid4().hex}
+def envelope(data, *, code: str, message: str, request_id: str):
+    return success_response(data=data, code=code, message=message, request_id=request_id)
 
 @router.post("/{recovery_id}/approve")
 def approve(recovery_id: UUID, command: DecisionCommand,
-            principal: Principal = Depends(require_operations_user), service=Depends(get_decision_service)):
-    return envelope(service.decide(recovery_id, "APPROVE", command.reason, principal.subject))
+            principal: Principal = Depends(require_operations_user), service=Depends(get_decision_service),
+            request_id: str = Depends(get_request_id)):
+    return envelope(service.decide(recovery_id, "APPROVE", command.decision_reason, principal.subject),
+                    code="RECOVERY_APPROVED", message="Recovery plan approved and activated", request_id=request_id)
 
 @router.post("/{recovery_id}/reject")
 def reject(recovery_id: UUID, command: DecisionCommand,
-           principal: Principal = Depends(require_operations_user), service=Depends(get_decision_service)):
-    return envelope(service.decide(recovery_id, "REJECT", command.reason, principal.subject))
+           principal: Principal = Depends(require_operations_user), service=Depends(get_decision_service),
+           request_id: str = Depends(get_request_id)):
+    return envelope(service.decide(recovery_id, "REJECT", command.decision_reason, principal.subject),
+                    code="RECOVERY_REJECTED", message="Recovery candidate rejected", request_id=request_id)
 
 
 @router.post("/{recovery_id}/modify")
 def modify(recovery_id: UUID, command: DecisionCommand,
            principal: Principal = Depends(require_operations_user), service=Depends(get_decision_service),
-           workflow=Depends(get_recovery_workflow)):
-    from fastapi.responses import JSONResponse
-    reply = service.modify(recovery_id, command.reason, principal.subject, workflow)
-    return JSONResponse(status_code=reply.http_status, content=reply.envelope("req_"+uuid4().hex))
+           request_id: str = Depends(get_request_id)):
+    data = service.modify(recovery_id, command.decision_reason, principal.subject)
+    return envelope(data, code="RECOVERY_MODIFICATION_PROCESSED",
+                    message="The current candidate was cancelled and the new recovery attempt was processed",
+                    request_id=request_id)

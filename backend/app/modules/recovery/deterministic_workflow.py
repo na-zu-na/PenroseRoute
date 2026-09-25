@@ -80,7 +80,6 @@ class RecoveryWorkflow:
         self.recoveries = RecoveryRepository(session)
 
     def start(self, incident_id: UUID) -> StartRecoveryResult:
-        created: list[RecoveryAttemptView] = []
         with self.session.begin():
             incident = self.incidents.lock_incident_by_id(incident_id)
             if incident is None:
@@ -107,6 +106,42 @@ class RecoveryWorkflow:
             )
             attempt = self._new_attempt(context, attempt_no=1, previous_id=None)
 
+        return self._execute_attempts(incident_id, context, attempt)
+
+    def resume(self, recovery_plan_id: UUID) -> StartRecoveryResult:
+        """Run an already committed DRAFT attempt after a dispatcher Modify."""
+        with self.session.begin():
+            attempt = self._lock_attempt(recovery_plan_id)
+            if (
+                attempt.status is not RecoveryPlanStatus.DRAFT
+                or attempt.solver_status is not None
+                or attempt.candidate_delivery_plan_id is not None
+            ):
+                raise Conflict(
+                    code="RECOVERY_ALREADY_IN_PROGRESS",
+                    message="Recovery attempt has already been processed",
+                )
+            self._assert_base_still_current(
+                attempt.incident_id, attempt.base_delivery_plan_id
+            )
+            context = materialize_recovery_context(
+                self.session,
+                incident_id=attempt.incident_id,
+                scope=attempt.replanning_scope,
+            )
+            if context.base_plan_id != attempt.base_delivery_plan_id:
+                raise Conflict(
+                    code="BASE_PLAN_NOT_CURRENT",
+                    message="Recovery attempt base plan changed",
+                )
+            incident_id = attempt.incident_id
+
+        return self._execute_attempts(incident_id, context, attempt)
+
+    def _execute_attempts(
+        self, incident_id: UUID, context: RecoveryContext, attempt: RecoveryPlan
+    ) -> StartRecoveryResult:
+        created: list[RecoveryAttemptView] = []
         while True:
             try:
                 outcome = execute_recovery(context)

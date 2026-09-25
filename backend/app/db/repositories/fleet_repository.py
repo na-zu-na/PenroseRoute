@@ -55,6 +55,70 @@ class FleetRepository:
         )
         return self.session.scalar(statement)
 
+    def get_assignment_by_id(self, assignment_id: UUID) -> VehicleDriverAssignment | None:
+        return self.session.scalar(
+            select(VehicleDriverAssignment)
+            .where(VehicleDriverAssignment.id == assignment_id)
+            .options(joinedload(VehicleDriverAssignment.vehicle), joinedload(VehicleDriverAssignment.driver))
+        )
+
+    def list_assignments(
+        self, *, page: int, page_size: int,
+        window_start: datetime | None = None, window_end: datetime | None = None,
+        status: AssignmentStatus | None = None,
+        vehicle_id: UUID | None = None, driver_id: UUID | None = None,
+    ) -> list[VehicleDriverAssignment]:
+        statement = self._filter_assignments(
+            select(VehicleDriverAssignment).options(
+                joinedload(VehicleDriverAssignment.vehicle),
+                joinedload(VehicleDriverAssignment.driver),
+            ), window_start, window_end, status, vehicle_id, driver_id,
+        )
+        return list(self.session.scalars(
+            statement.order_by(VehicleDriverAssignment.assigned_from_at, VehicleDriverAssignment.id)
+            .offset((page - 1) * page_size).limit(page_size)
+        ))
+
+    def count_assignments(
+        self, *, window_start: datetime | None = None, window_end: datetime | None = None,
+        status: AssignmentStatus | None = None,
+        vehicle_id: UUID | None = None, driver_id: UUID | None = None,
+    ) -> int:
+        statement = self._filter_assignments(
+            select(func.count()).select_from(VehicleDriverAssignment),
+            window_start, window_end, status, vehicle_id, driver_id,
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    @staticmethod
+    def _filter_assignments(statement, window_start, window_end, status, vehicle_id, driver_id):
+        if window_start is not None:
+            statement = statement.where(or_(
+                VehicleDriverAssignment.assigned_until_at.is_(None),
+                VehicleDriverAssignment.assigned_until_at > window_start,
+            ))
+        if window_end is not None:
+            statement = statement.where(VehicleDriverAssignment.assigned_from_at < window_end)
+        if status is not None:
+            statement = statement.where(VehicleDriverAssignment.status == status)
+        if vehicle_id is not None:
+            statement = statement.where(VehicleDriverAssignment.vehicle_id == vehicle_id)
+        if driver_id is not None:
+            statement = statement.where(VehicleDriverAssignment.driver_id == driver_id)
+        return statement
+
+    def has_assignment_overlap(
+        self, *, vehicle_id: UUID, driver_id: UUID,
+        start: datetime, end: datetime,
+    ) -> bool:
+        statement = select(exists().where(
+            VehicleDriverAssignment.status.in_((AssignmentStatus.PLANNED, AssignmentStatus.ACTIVE)),
+            or_(VehicleDriverAssignment.vehicle_id == vehicle_id, VehicleDriverAssignment.driver_id == driver_id),
+            VehicleDriverAssignment.assigned_from_at < end,
+            or_(VehicleDriverAssignment.assigned_until_at.is_(None), VehicleDriverAssignment.assigned_until_at > start),
+        ))
+        return bool(self.session.scalar(statement))
+
     def list_vehicles(
         self,
         *,

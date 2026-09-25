@@ -22,6 +22,14 @@ class RecoveryRepository:
         )
         return list(self.session.scalars(statement))
 
+    def get_recovery_plan_by_id(self, recovery_plan_id: UUID) -> RecoveryPlan | None:
+        return self.session.scalar(
+            select(RecoveryPlan).where(RecoveryPlan.id == recovery_plan_id).options(
+                joinedload(RecoveryPlan.base_delivery_plan),
+                joinedload(RecoveryPlan.candidate_delivery_plan),
+            )
+        )
+
     def lock_recovery_plan_for_decision(
         self, recovery_plan_id: UUID
     ) -> RecoveryPlan | None:

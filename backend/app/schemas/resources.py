@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 Code = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
@@ -172,3 +172,122 @@ class DriverResponse(BaseModel):
 class DriverStatusResult(BaseModel):
     driver: DriverResponse
     manual_intervention_required: bool
+
+
+class OrderExecutionStatus(StrEnum):
+    PLANNED = "PLANNED"
+    PICKUP_IN_PROGRESS = "PICKUP_IN_PROGRESS"
+    PICKED_UP = "PICKED_UP"
+    DELIVERING = "DELIVERING"
+    COMPLETED = "COMPLETED"
+
+
+class OrderRiskStatus(StrEnum):
+    NORMAL = "NORMAL"
+    AT_RISK = "AT_RISK"
+
+
+class OrderWritable(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_date: date
+    merchant_id: UUID
+    customer_id: UUID
+    pickup_location: LocationInput
+    delivery_location: LocationInput
+    pickup_ready_at: AwareDatetime
+    pickup_service_seconds: int = Field(ge=0)
+    delivery_window_start_at: AwareDatetime
+    delivery_window_end_at: AwareDatetime
+    delivery_service_seconds: int = Field(ge=0)
+    demand_load_units: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def valid_window(self):
+        if self.delivery_window_end_at < self.delivery_window_start_at:
+            raise ValueError("Delivery window end must not precede start")
+        return self
+
+
+class OrderCreate(OrderWritable):
+    order_code: Code
+
+
+class OrderReplace(OrderWritable):
+    pass
+
+
+class OrderExecutionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: OrderExecutionStatus
+
+
+class CurrentOrderPlanResponse(BaseModel):
+    delivery_plan_id: UUID
+    plan_code: str
+    assignment_status: str
+    vehicle_route_id: UUID | None
+    route_no: int | None
+    vehicle_id: UUID | None
+    driver_id: UUID | None
+
+
+class OrderResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    order_code: str
+    business_date: date
+    merchant_id: UUID
+    customer_id: UUID
+    pickup_location: LocationResponse
+    delivery_location: LocationResponse
+    pickup_ready_at: datetime
+    pickup_service_seconds: int
+    delivery_window_start_at: datetime
+    delivery_window_end_at: datetime
+    delivery_service_seconds: int
+    demand_load_units: int
+    execution_status: OrderExecutionStatus
+    risk_status: OrderRiskStatus
+    current_plan: CurrentOrderPlanResponse | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssignmentStatus(StrEnum):
+    PLANNED = "PLANNED"
+    ACTIVE = "ACTIVE"
+    ENDED = "ENDED"
+    CANCELLED = "CANCELLED"
+
+
+class AssignmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_date: date
+    vehicle_id: UUID
+    driver_id: UUID
+    assignment_start_at: AwareDatetime
+    assignment_end_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def valid_window(self):
+        if self.assignment_end_at <= self.assignment_start_at:
+            raise ValueError("Assignment end must be later than start")
+        return self
+
+
+class AssignmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    vehicle_id: UUID
+    driver_id: UUID
+    assigned_from_at: datetime
+    assigned_until_at: datetime | None
+    status: AssignmentStatus
+    activated_at: datetime | None
+    ended_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
