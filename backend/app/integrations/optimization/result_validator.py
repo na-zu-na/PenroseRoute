@@ -41,7 +41,14 @@ class SolverResultValidator:
             return tuple(issues)
 
         orders = {order.order_id: order for order in solver_input.orders}
-        vehicle_ids = {vehicle.vehicle_id for vehicle in solver_input.vehicles}
+        vehicles = {
+            vehicle.vehicle_id: vehicle for vehicle in solver_input.vehicles
+        }
+        vehicle_ids = set(vehicles)
+        location_index = {
+            location_id: index
+            for index, location_id in enumerate(solver_input.location_ids)
+        }
         route_vehicle_ids: set[UUID] = set()
         assigned_order_ids: set[UUID] = set()
 
@@ -72,6 +79,8 @@ class SolverResultValidator:
                 )
 
             stops_by_order: dict[UUID, list[SolverStop]] = {}
+            vehicle = vehicles.get(route.vehicle_id)
+            current_load = 0
             for stop in route.stops:
                 if stop.order_id not in orders:
                     issues.append(
@@ -81,7 +90,129 @@ class SolverResultValidator:
                         )
                     )
                     continue
+                order = orders[stop.order_id]
+                expected_service = {
+                    SolverStopType.PICKUP: order.pickup_service_seconds,
+                    SolverStopType.HANDOVER: order.handover_service_seconds,
+                    SolverStopType.DELIVERY: order.delivery_service_seconds,
+                }[stop.stop_type]
+                expected_load_change = (
+                    -order.demand_load_units
+                    if stop.stop_type is SolverStopType.DELIVERY
+                    else order.demand_load_units
+                )
+                if (
+                    stop.service_duration_seconds != expected_service
+                    or stop.departure_time_seconds
+                    != stop.arrival_time_seconds + expected_service
+                ):
+                    issues.append(
+                        ValidationIssue(
+                            code="STOP_SERVICE_TIME_INVALID",
+                            message=f"Stop service time is invalid: {stop.order_id}",
+                        )
+                    )
+                if stop.load_change_load_units != expected_load_change:
+                    issues.append(
+                        ValidationIssue(
+                            code="STOP_LOAD_CHANGE_INVALID",
+                            message=f"Stop load change is invalid: {stop.order_id}",
+                        )
+                    )
+                current_load += stop.load_change_load_units
+                if vehicle is not None and (
+                    current_load < 0
+                    or current_load > vehicle.capacity_load_units
+                ):
+                    issues.append(
+                        ValidationIssue(
+                            code="VEHICLE_CAPACITY_EXCEEDED",
+                            message=f"Route load violates vehicle capacity: {route.vehicle_id}",
+                        )
+                    )
+                if stop.stop_type in (
+                    SolverStopType.PICKUP,
+                    SolverStopType.HANDOVER,
+                ) and stop.arrival_time_seconds < order.ready_time_seconds:
+                    issues.append(
+                        ValidationIssue(
+                            code="PICKUP_READY_TIME_VIOLATED",
+                            message=f"Order origin precedes ready time: {stop.order_id}",
+                        )
+                    )
+                if stop.stop_type is SolverStopType.DELIVERY and not (
+                    order.delivery_window_start_seconds
+                    <= stop.arrival_time_seconds
+                    <= order.delivery_window_end_seconds
+                ):
+                    issues.append(
+                        ValidationIssue(
+                            code="DELIVERY_WINDOW_VIOLATED",
+                            message=f"Order delivery is outside its window: {stop.order_id}",
+                        )
+                    )
+                if vehicle is not None and not (
+                    vehicle.available_from_seconds
+                    <= stop.arrival_time_seconds
+                    and stop.departure_time_seconds
+                    <= vehicle.available_until_seconds
+                ):
+                    issues.append(
+                        ValidationIssue(
+                            code="VEHICLE_AVAILABILITY_VIOLATED",
+                            message=f"Route is outside vehicle availability: {route.vehicle_id}",
+                        )
+                    )
                 stops_by_order.setdefault(stop.order_id, []).append(stop)
+
+            if vehicle is not None and route.stops and all(
+                stop.location_id in location_index for stop in route.stops
+            ):
+                expected_distance = 0
+                previous_location_id = vehicle.start_location_id
+                previous_departure = vehicle.available_from_seconds
+                for stop in route.stops:
+                    expected_distance += solver_input.distance_matrix_meters[
+                        location_index[previous_location_id]
+                    ][location_index[stop.location_id]]
+                    travel_seconds = solver_input.duration_matrix_seconds[
+                        location_index[previous_location_id]
+                    ][location_index[stop.location_id]]
+                    if stop.arrival_time_seconds < (
+                        previous_departure + travel_seconds
+                    ):
+                        issues.append(
+                            ValidationIssue(
+                                code="ROUTE_TRAVEL_TIME_INVALID",
+                                message=(
+                                    "A route stop cannot be reached at its "
+                                    f"reported time: {route.vehicle_id}"
+                                ),
+                            )
+                        )
+                    previous_location_id = stop.location_id
+                    previous_departure = stop.departure_time_seconds
+                if route.distance_meters != expected_distance:
+                    issues.append(
+                        ValidationIssue(
+                            code="ROUTE_DISTANCE_MISMATCH",
+                            message=f"Route distance does not match the matrix: {route.vehicle_id}",
+                        )
+                    )
+                expected_duration = (
+                    route.stops[-1].departure_time_seconds
+                    - vehicle.available_from_seconds
+                )
+                if route.duration_seconds != expected_duration:
+                    issues.append(
+                        ValidationIssue(
+                            code="ROUTE_DURATION_MISMATCH",
+                            message=(
+                                "Route duration does not match its timestamps: "
+                                f"{route.vehicle_id}"
+                            ),
+                        )
+                    )
 
             for order_id, stops in stops_by_order.items():
                 if order_id in assigned_order_ids:

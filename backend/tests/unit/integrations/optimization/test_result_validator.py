@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from uuid import UUID
 
@@ -65,13 +66,14 @@ def make_stop(
     location_id: UUID,
 ) -> SolverStop:
     load_change = 2 if stop_type is SolverStopType.PICKUP else -2
+    arrival = 600 if sequence_no == 1 else 2_100
     return SolverStop(
         order_id=ORDER_ID,
         location_id=location_id,
         stop_type=stop_type,
         sequence_no=sequence_no,
-        arrival_time_seconds=sequence_no * 600,
-        departure_time_seconds=sequence_no * 600 + 300,
+        arrival_time_seconds=arrival,
+        departure_time_seconds=arrival + 300,
         service_duration_seconds=300,
         load_change_load_units=load_change,
     )
@@ -82,7 +84,7 @@ def make_route(*stops: SolverStop) -> SolverRoute:
         vehicle_id=VEHICLE_ID,
         stops=stops,
         distance_meters=8_000,
-        duration_seconds=1_500,
+        duration_seconds=2_400,
     )
 
 
@@ -97,11 +99,61 @@ def test_validator_accepts_complete_feasible_result() -> None:
         ),
         unassigned_orders=(),
         total_distance_meters=8_000,
-        total_duration_seconds=1_500,
+        total_duration_seconds=2_400,
         diagnostic=None,
     )
 
     assert SolverResultValidator().validate(make_input(), result) == ()
+
+
+def test_validator_rejects_temporally_unreachable_stop() -> None:
+    pickup = make_stop(SolverStopType.PICKUP, 1, PICKUP_ID)
+    delivery = replace(
+        make_stop(SolverStopType.DELIVERY, 2, DELIVERY_ID),
+        arrival_time_seconds=1_200,
+        departure_time_seconds=1_500,
+    )
+    result = SolverResult(
+        status=SolverStatus.FEASIBLE,
+        routes=(replace(make_route(pickup, delivery), duration_seconds=1_500),),
+        unassigned_orders=(),
+        total_distance_meters=8_000,
+        total_duration_seconds=1_500,
+        diagnostic=None,
+    )
+
+    codes = {
+        issue.code
+        for issue in SolverResultValidator().validate(make_input(), result)
+    }
+
+    assert "ROUTE_TRAVEL_TIME_INVALID" in codes
+
+
+def test_validator_rejects_route_duration_mismatch() -> None:
+    result = SolverResult(
+        status=SolverStatus.FEASIBLE,
+        routes=(
+            replace(
+                make_route(
+                    make_stop(SolverStopType.PICKUP, 1, PICKUP_ID),
+                    make_stop(SolverStopType.DELIVERY, 2, DELIVERY_ID),
+                ),
+                duration_seconds=1,
+            ),
+        ),
+        unassigned_orders=(),
+        total_distance_meters=8_000,
+        total_duration_seconds=1,
+        diagnostic=None,
+    )
+
+    codes = {
+        issue.code
+        for issue in SolverResultValidator().validate(make_input(), result)
+    }
+
+    assert "ROUTE_DURATION_MISMATCH" in codes
 
 
 def test_validator_rejects_duplicate_assignment_and_unassigned_order() -> None:
@@ -210,3 +262,87 @@ def test_validator_rejects_routes_for_non_feasible_result() -> None:
     issues = SolverResultValidator().validate(make_input(), result)
 
     assert "STATUS_RESULT_CONFLICT" in {issue.code for issue in issues}
+
+
+def test_validator_rejects_capacity_and_load_change_violations() -> None:
+    pickup = SolverStop(
+        order_id=ORDER_ID,
+        location_id=PICKUP_ID,
+        stop_type=SolverStopType.PICKUP,
+        sequence_no=1,
+        arrival_time_seconds=600,
+        departure_time_seconds=900,
+        service_duration_seconds=300,
+        load_change_load_units=5,
+    )
+    delivery = SolverStop(
+        order_id=ORDER_ID,
+        location_id=DELIVERY_ID,
+        stop_type=SolverStopType.DELIVERY,
+        sequence_no=2,
+        arrival_time_seconds=1_200,
+        departure_time_seconds=1_500,
+        service_duration_seconds=300,
+        load_change_load_units=-5,
+    )
+    result = SolverResult(
+        status=SolverStatus.FEASIBLE,
+        routes=(make_route(pickup, delivery),),
+        unassigned_orders=(),
+        total_distance_meters=8_000,
+        total_duration_seconds=1_500,
+        diagnostic=None,
+    )
+
+    codes = {
+        issue.code
+        for issue in SolverResultValidator().validate(make_input(), result)
+    }
+
+    assert "STOP_LOAD_CHANGE_INVALID" in codes
+    assert "VEHICLE_CAPACITY_EXCEEDED" in codes
+
+
+def test_validator_rejects_ready_time_delivery_window_and_service_violations() -> None:
+    pickup = SolverStop(
+        order_id=ORDER_ID,
+        location_id=PICKUP_ID,
+        stop_type=SolverStopType.PICKUP,
+        sequence_no=1,
+        arrival_time_seconds=600,
+        departure_time_seconds=601,
+        service_duration_seconds=1,
+        load_change_load_units=2,
+    )
+    delivery = SolverStop(
+        order_id=ORDER_ID,
+        location_id=DELIVERY_ID,
+        stop_type=SolverStopType.DELIVERY,
+        sequence_no=2,
+        arrival_time_seconds=3_601,
+        departure_time_seconds=3_602,
+        service_duration_seconds=1,
+        load_change_load_units=-2,
+    )
+    result = SolverResult(
+        status=SolverStatus.FEASIBLE,
+        routes=(make_route(pickup, delivery),),
+        unassigned_orders=(),
+        total_distance_meters=8_000,
+        total_duration_seconds=1_500,
+        diagnostic=None,
+    )
+
+    solver_input = make_input()
+    solver_input = replace(
+        solver_input,
+        orders=(replace(solver_input.orders[0], ready_time_seconds=700),),
+    )
+    codes = {
+        issue.code
+        for issue in SolverResultValidator().validate(solver_input, result)
+    }
+
+    assert "PICKUP_READY_TIME_VIOLATED" in codes
+    assert "DELIVERY_WINDOW_VIOLATED" in codes
+    assert "STOP_SERVICE_TIME_INVALID" in codes

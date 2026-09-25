@@ -109,6 +109,34 @@ class FleetRepository:
         )
         return list(self.session.scalars(statement))
 
+    def get_vehicle_driver_pairs_for_window(
+        self,
+        operational_from: datetime,
+        operational_until: datetime,
+    ) -> list[VehicleDriverAssignment]:
+        statement = (
+            select(VehicleDriverAssignment)
+            .join(VehicleDriverAssignment.vehicle)
+            .where(
+                VehicleDriverAssignment.status.in_(
+                    (AssignmentStatus.PLANNED, AssignmentStatus.ACTIVE)
+                ),
+                VehicleDriverAssignment.assigned_from_at <= operational_until,
+                or_(
+                    VehicleDriverAssignment.assigned_until_at.is_(None),
+                    VehicleDriverAssignment.assigned_until_at > operational_from,
+                ),
+            )
+            .options(
+                joinedload(VehicleDriverAssignment.vehicle).joinedload(
+                    Vehicle.current_location
+                ),
+                joinedload(VehicleDriverAssignment.driver),
+            )
+            .order_by(Vehicle.vehicle_code)
+        )
+        return list(self.session.scalars(statement))
+
     def add_vehicle(self, vehicle: Vehicle) -> None:
         self.session.add(vehicle)
 
