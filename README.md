@@ -47,6 +47,10 @@ See [`database/README.md`](database/README.md) for the SQL file boundaries.
 .venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
+## Simulated vehicle positions for frontend maps
+
+`GET /api/operations/simulated-positions?business_date=YYYY-MM-DD` returns GPS-style positions for every vehicle in the current plan. Poll it once per second; the response includes route paths, timestamps, motion states and `source: "SIMULATED"`. The default loop is 120 seconds. This is a read-only visualization feed; no real GPS is connected and business vehicle locations are unchanged. See [模拟车辆位置接口](backend/docs/SIMULATED_GPS.md) for the response contract, frontend usage and route-geometry limits.
+
 ## Dispatch Agent
 
 跨模块调度入口为 `POST /api/agent/dispatch`：支持资源/运营查询、异常恢复、候选读取、版本比较和多轮参数补充。正常规划独立调用 `POST /api/planning/generate`，不经过 Agent。默认规则识别，可选 Bedrock；API 需要配置身份令牌及上下文签名密钥。

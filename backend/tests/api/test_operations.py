@@ -301,6 +301,62 @@ def test_operations_queries_are_scoped_to_current_plan() -> None:
         asyncio.run(scenario())
 
 
+def test_simulated_positions_are_read_only_and_scoped_to_current_plan() -> None:
+    with operations_client() as (client, session):
+        ids = seed_current_operation(session)
+        vehicle = session.get(Vehicle, ids["vehicle_id"])
+        original_location_id = vehicle.current_location_id
+        original_recorded_at = vehicle.current_location_recorded_at
+
+        async def scenario() -> None:
+            response = await client.get(
+                "/api/operations/simulated-positions",
+                params={"business_date": str(ids["business_date"])},
+            )
+            assert response.status_code == 200, response.text
+            data = response.json()["data"]
+            assert data["delivery_plan_id"] == str(ids["plan_id"])
+            assert len(data["vehicles"]) == 1
+            position = data["vehicles"][0]
+            assert position["vehicle_id"] == str(ids["vehicle_id"])
+            assert position["route_id"] == str(ids["route_id"])
+            assert position["source"] == "SIMULATED"
+            assert 1.30 <= position["latitude"] <= 1.32
+            assert 103.80 <= position["longitude"] <= 103.82
+            assert len(position["path"]) == 4
+
+            missing = await client.get(
+                "/api/operations/simulated-positions",
+                params={"business_date": "2030-01-01"},
+            )
+            assert missing.status_code == 404
+            assert missing.json()["code"] == "CURRENT_PLAN_NOT_FOUND"
+
+        asyncio.run(scenario())
+        session.expire_all()
+        vehicle = session.get(Vehicle, ids["vehicle_id"])
+        assert vehicle.current_location_id == original_location_id
+        assert vehicle.current_location_recorded_at == original_recorded_at
+
+
+def test_simulated_positions_allows_local_frontend_preflight() -> None:
+    async def scenario() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            response = await client.options(
+                "/api/operations/simulated-positions",
+                headers={
+                    "Origin": "http://localhost:5173",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            assert response.status_code == 200
+            assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+    asyncio.run(scenario())
+
+
 def test_stop_actions_advance_execution_and_resources_atomically() -> None:
     with operations_client() as (client, session):
         ids = seed_current_operation(session)

@@ -35,6 +35,26 @@ class PlanRepository:
         )
         return self.session.scalar(statement)
 
+    def get_current_plan_for_simulation(
+        self, business_date: date
+    ) -> DeliveryPlan | None:
+        statement = (
+            select(DeliveryPlan)
+            .where(
+                DeliveryPlan.business_date == business_date,
+                DeliveryPlan.status == DeliveryPlanStatus.CURRENT,
+            )
+            .options(
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.vehicle),
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.start_location),
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.end_location),
+                selectinload(DeliveryPlan.routes)
+                .selectinload(VehicleRoute.stops)
+                .joinedload(RouteStop.location),
+            )
+        )
+        return self.session.scalar(statement)
+
     def get_current_plan_for_operations(
         self, business_date: date
     ) -> DeliveryPlan | None:

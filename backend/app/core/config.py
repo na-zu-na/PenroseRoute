@@ -20,6 +20,10 @@ class Settings(BaseSettings):
 
     app_name: str = "PenroseRoute API"
     app_env: str = "development"
+    frontend_origins: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
     database_url: str = (
         "postgresql+psycopg://postgres:postgres@localhost:5432/penrose_route"
     )

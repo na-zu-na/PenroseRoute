@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
@@ -115,3 +116,25 @@ class StopExecutionResponse(BaseModel):
     route_status: str
     vehicle_status: str
     driver_status: str
+
+
+class SimulatedVehiclePositionResponse(BaseModel):
+    vehicle_id: UUID
+    vehicle_code: str
+    route_id: UUID
+    route_no: int
+    latitude: float
+    longitude: float
+    motion: Literal["BEFORE_START", "MOVING", "AT_STOP", "FINISHED"]
+    next_stop_id: UUID | None
+    path: tuple[tuple[float, float], ...]
+    source: Literal["SIMULATED"]
+
+
+class SimulatedPositionsResponse(BaseModel):
+    delivery_plan_id: UUID
+    business_date: str
+    generated_at: datetime
+    simulated_at: datetime
+    cycle_seconds: int
+    vehicles: tuple[SimulatedVehiclePositionResponse, ...]

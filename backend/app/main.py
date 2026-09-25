@@ -3,12 +3,24 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.error_handlers import register_error_handlers
 from app.api.router import api_router
+from app.core.config import get_settings
 
 
 app = FastAPI(title="PenroseRoute API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        origin.strip()
+        for origin in get_settings().frontend_origins.split(",")
+        if origin.strip()
+    ],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["*"],
+)
 register_error_handlers(app)
 app.include_router(api_router)
 

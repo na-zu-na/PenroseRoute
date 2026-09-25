@@ -79,8 +79,11 @@ def test_p0_openapi_has_all_59_formal_endpoints_and_no_temporary_recovery():
         for path, operations in paths.items() for method in operations
         if path.startswith("/api/") and path != "/api/health" and method.lower() in {"get", "post", "put", "patch"}
     }
-    assert expected == actual, f"missing={sorted(expected - actual)}; extra={sorted(actual - expected)}"
-    assert len(actual) == 59
+    # The visualization simulator is an additional demo endpoint, outside the
+    # original 59-endpoint P0 business contract.
+    formal_actual = actual - {("GET", "/api/operations/simulated-positions")}
+    assert expected == formal_actual, f"missing={sorted(expected - formal_actual)}; extra={sorted(formal_actual - expected)}"
+    assert len(formal_actual) == 59
     assert not any("deterministic-recovery" in path for path in paths)
 
 

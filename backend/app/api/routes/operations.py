@@ -1,28 +1,64 @@
-from datetime import date
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy.orm import Session
 
 from app.api.auth import Principal, authenticate_dispatch_user
 from app.api.dependencies import get_db, get_request_id
 from app.api.routes.recovery import require_operations_user
+from app.core.errors import NotFound
 from app.core.responses import success_response
 from app.db.models.resources import OrderExecutionStatus, OrderRiskStatus
+from app.db.repositories.plan_repository import PlanRepository
 from app.modules.operations.queries import OperationsQueryService
+from app.modules.operations.simulation import simulated_positions
 from app.schemas.common import ApiResponse, PaginatedData, PaginationParams
 from app.schemas.operations import (
     OperationOrderResponse,
     OperationRouteResponse,
     OperationsDashboardResponse,
     OperationVehicleResponse,
+    SimulatedPositionsResponse,
 )
 
 
 router = APIRouter(prefix="/operations", tags=["operations"])
+
+
+@router.get("/simulated-positions")
+def get_simulated_positions(
+    business_date: date,
+    request_id: Annotated[str, Depends(get_request_id)],
+    db: Annotated[Session, Depends(get_db)],
+    cycle_seconds: Annotated[int, Query(ge=30, le=3600)] = 120,
+) -> ApiResponse[SimulatedPositionsResponse]:
+    """One GPS-style snapshot; clients poll this endpoint once per second."""
+    plan = PlanRepository(db).get_current_plan_for_simulation(business_date)
+    if plan is None:
+        raise NotFound(code="CURRENT_PLAN_NOT_FOUND", message="Current delivery plan was not found")
+    generated_at = datetime.now(timezone.utc)
+    snapshot = simulated_positions(
+        plan.routes,
+        generated_at=generated_at,
+        cycle_seconds=cycle_seconds,
+        elapsed_seconds=generated_at.timestamp() % cycle_seconds,
+    )
+    data = SimulatedPositionsResponse(
+        delivery_plan_id=plan.id,
+        business_date=business_date.isoformat(),
+        generated_at=snapshot.generated_at,
+        simulated_at=snapshot.simulated_at,
+        cycle_seconds=snapshot.cycle_seconds,
+        vehicles=[vars(vehicle) for vehicle in snapshot.vehicles],
+    )
+    return success_response(
+        data=data,
+        message="Simulated vehicle positions retrieved",
+        request_id=request_id,
+    )
 
 
 @router.get("/dashboard")
