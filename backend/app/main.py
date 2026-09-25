@@ -1,7 +1,41 @@
-from fastapi import FastAPI
+from uuid import uuid4
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
+from app.integrations.agent.contracts import RecoveryError
 
 
 app = FastAPI(title="PenroseRoute API")
 app.include_router(api_router)
+
+
+def error_response(request: Request, status: int, code: str, message: str):
+    return JSONResponse(status_code=status, content={
+        "success": False, "code": code, "message": message, "data": None,
+        "request_id": getattr(request.state, "request_id", None) or "req_" + uuid4().hex,
+    })
+
+
+@app.exception_handler(RecoveryError)
+async def recovery_error_handler(request: Request, exc: RecoveryError):
+    return error_response(request, exc.http_status, exc.code, str(exc))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    # Do not echo arbitrary client input in the error response.
+    return error_response(request, 422, "VALIDATION_ERROR", "请求参数不符合接口约束")
+
+
+from sqlalchemy.exc import IntegrityError, OperationalError
+
+@app.exception_handler(IntegrityError)
+async def database_conflict_handler(request: Request, exc: IntegrityError):
+    return error_response(request, 409, "DATABASE_CONFLICT", "数据状态或并发操作冲突")
+
+@app.exception_handler(OperationalError)
+async def database_unavailable_handler(request: Request, exc: OperationalError):
+    return error_response(request, 503, "DATABASE_UNAVAILABLE", "数据库暂不可用，请检查服务配置")

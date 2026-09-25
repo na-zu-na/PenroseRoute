@@ -1,0 +1,1 @@
+"""Cross-module dispatch application."""

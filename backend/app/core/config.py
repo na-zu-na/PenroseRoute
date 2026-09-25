@@ -1,9 +1,22 @@
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import SecretStr, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    dispatch_intent_provider: Literal["rules", "bedrock"] = "rules"
+    dispatch_api_tokens: SecretStr | None = None
+    dispatch_context_secret: SecretStr | None = None
+    business_timezone: str = "Asia/Singapore"
+    agent_explanation_provider: Literal["template", "bedrock"] = "template"
+    bedrock_model_id: str | None = None
+    bedrock_endpoint_url: str | None = None
+    agent_connect_timeout_seconds: float = Field(default=3, gt=0, le=30)
+    agent_read_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    aws_region: str = "ap-southeast-1"
+
     app_name: str = "PenroseRoute API"
     app_env: str = "development"
     database_url: str = (
@@ -16,4 +29,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
