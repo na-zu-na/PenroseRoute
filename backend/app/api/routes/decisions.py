@@ -5,7 +5,7 @@ from app.api.auth import Principal
 from app.api.routes.recovery import require_operations_user, get_recovery_workflow
 from app.modules.decisions.service import DecisionService
 
-router = APIRouter(prefix="/api/recovery-plans", tags=["Human decisions"])
+router = APIRouter(prefix="/recovery-plans", tags=["Human decisions"])
 
 class DecisionCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")

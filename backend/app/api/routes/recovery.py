@@ -34,8 +34,9 @@ def get_recovery_workflow(request: Request) -> RecoveryWorkflow:
 def build_recovery_router(
     workflow: RecoveryWorkflow | None = None,
     operations_user_dependency: Callable = require_operations_user,
+    prefix: str = "/api",
 ) -> APIRouter:
-    router = APIRouter(prefix="/api", dependencies=[Depends(operations_user_dependency)])
+    router = APIRouter(prefix=prefix, dependencies=[Depends(operations_user_dependency)])
     provider = (lambda: workflow) if workflow is not None else get_recovery_workflow
 
     @router.post("/incidents/{incident_id}/recovery", status_code=201)
@@ -53,4 +54,4 @@ def build_recovery_router(
     return router
 
 
-router = build_recovery_router()
+router = build_recovery_router(prefix="")

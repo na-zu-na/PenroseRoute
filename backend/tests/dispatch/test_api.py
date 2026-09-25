@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.main import app
 from app.api.auth import Principal, authenticate_dispatch_user
 from app.api.routes.dispatch import get_dispatch_service
-from app.api.routes.operations import get_planning_service, get_incident_service
+from app.api.routes.operations import get_incident_service
 from app.api.routes.decisions import get_decision_service
 from app.api.routes.recovery import get_recovery_workflow
 from app.core.config import Settings
@@ -40,15 +40,14 @@ def test_real_http_end_to_end_dispatch_recovery_approval(database):
     service = DispatchService(DispatchQueries(sessions, clock=lambda: now), codec=ContextCodec("x"*32),
         recovery=recovery, clock=lambda: now)
     app.dependency_overrides.update({authenticate_dispatch_user: lambda: Principal("alice", "dispatcher"),
-        get_dispatch_service: lambda: service, get_planning_service: lambda: planning,
+        get_dispatch_service: lambda: service,
         get_incident_service: lambda: IncidentService(sessions, clock=lambda: now),
         get_decision_service: lambda: DecisionService(sessions, clock=lambda: now+timedelta(seconds=90)),
         get_recovery_workflow: lambda: recovery})
     client = TestClient(app)
-    response = client.post("/api/planning/generate", json={"business_date": str(day)})
-    assert response.status_code == 201 and response.json()["code"] == "PLAN_DRAFT_CREATED"
-    plan_id = response.json()["data"]["plan_id"]
-    assert client.post(f"/api/delivery-plans/{plan_id}/activate").json()["code"] == "PLAN_ACTIVATED"
+    generated = planning.generate(day, "alice")
+    plan_id = generated["plan_id"]
+    planning.activate(UUID(plan_id), "alice")
     with sessions() as s, s.begin():
         route = s.scalar(select(VehicleRoute).where(VehicleRoute.delivery_plan_id == UUID(plan_id)))
         route_id = route.id

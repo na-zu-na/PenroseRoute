@@ -4,11 +4,13 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.error_handlers import register_error_handlers
 from app.api.router import api_router
 from app.integrations.agent.contracts import RecoveryError
 
 
 app = FastAPI(title="PenroseRoute API")
+register_error_handlers(app)
 app.include_router(api_router)
 
 

@@ -13,7 +13,7 @@ from app.modules.dispatch.queries import DispatchQueries
 from app.modules.dispatch.service import DispatchService
 from app.modules.dispatch.session import ContextCodec
 
-router = APIRouter(prefix="/api/agent", tags=["Dispatch Agent"])
+router = APIRouter(prefix="/agent", tags=["Dispatch Agent"])
 
 
 @lru_cache
