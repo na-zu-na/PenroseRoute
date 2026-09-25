@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     dispatch_context_secret: SecretStr | None = None
     business_timezone: str = "Asia/Singapore"
     agent_explanation_provider: Literal["template", "bedrock"] = "template"
+    recovery_orchestration_mode: Literal["deterministic", "agent"] = "deterministic"
     bedrock_model_id: str | None = None
     bedrock_endpoint_url: str | None = None
     agent_connect_timeout_seconds: float = Field(default=3, gt=0, le=30)

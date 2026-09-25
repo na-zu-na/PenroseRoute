@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import Principal
-from app.api.dependencies import get_db
+from app.api.dependencies import get_db, get_recovery_mode, get_recovery_explanation_client
 from app.api.routes.decisions import get_decision_service
 from app.api.routes.recovery import require_operations_user
 from app.db.models import (
@@ -28,7 +28,7 @@ from app.modules.decisions.service import DeterministicDecisionService
 
 
 @contextmanager
-def demo_client(clock) -> Iterator[tuple[TestClient, object]]:
+def demo_client(clock, *, recovery_mode="deterministic", explanation_client=None) -> Iterator[tuple[TestClient, object]]:
     connection = engine.connect()
     outer_transaction = connection.begin()
     previous_overrides = app.dependency_overrides.copy()
@@ -44,9 +44,12 @@ def demo_client(clock) -> Iterator[tuple[TestClient, object]]:
             yield session
 
     app.dependency_overrides[get_db] = get_demo_db
+    app.dependency_overrides[get_recovery_mode] = lambda: recovery_mode
+    app.dependency_overrides[get_recovery_explanation_client] = lambda: explanation_client
     app.dependency_overrides[require_operations_user] = lambda: Principal("p0-dispatcher", "dispatcher")
     app.dependency_overrides[get_decision_service] = lambda: DeterministicDecisionService(
-        sessions, clock=clock,
+        sessions, clock=clock, recovery_mode=recovery_mode,
+        explanation_client=explanation_client,
     )
     try:
         with TestClient(app, raise_server_exceptions=False) as client:

@@ -89,11 +89,14 @@ class DecisionService:
 
 
 class DeterministicDecisionService:
-    """P0 human decisions for the Agent-free Recovery workflow."""
+    """P0 human decisions; orchestration mode affects only the next attempt."""
 
-    def __init__(self, session_factory, clock=lambda: datetime.now(timezone.utc)):
+    def __init__(self, session_factory, clock=lambda: datetime.now(timezone.utc), *,
+                 recovery_mode="deterministic", explanation_client=None):
         self.sessions = session_factory
         self.clock = clock
+        self.recovery_mode = recovery_mode
+        self.explanation_client = explanation_client
 
     def decide(self, recovery_id, decision, reason, subject):
         from app.core.errors import BusinessError
@@ -135,7 +138,7 @@ class DeterministicDecisionService:
                 "incident_status": incident.status.value,
             }
 
-    def modify(self, recovery_id, reason, subject):
+    def modify(self, recovery_id, reason, subject, *, request_id="-"):
         from uuid import uuid4
 
         from app.core.errors import BusinessError, Conflict
@@ -189,7 +192,10 @@ class DeterministicDecisionService:
 
         # The decision is durable; routing and OR-Tools run without a DB transaction.
         with self.sessions() as session:
-            outcome = RecoveryWorkflow(session).resume(next_attempt_id)
+            outcome = RecoveryWorkflow(
+                session, mode=self.recovery_mode,
+                explanation_client=self.explanation_client,
+            ).resume(next_attempt_id, request_id=request_id)
         latest = outcome.attempts_created[-1]
         return {
             "decided_recovery_plan_id": str(old_attempt_id),

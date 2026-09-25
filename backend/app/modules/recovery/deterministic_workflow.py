@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -50,6 +51,9 @@ from app.modules.recovery.deterministic_context import (
 from app.modules.recovery.deterministic_orchestration import execute_recovery
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryAttemptView:
     recovery_plan_id: UUID
@@ -73,13 +77,17 @@ class StartRecoveryResult:
 
 
 class RecoveryWorkflow:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, mode: str = "deterministic", explanation_client=None) -> None:
+        if mode not in ("deterministic", "agent"):
+            raise ValueError("Unknown recovery orchestration mode")
         self.session = session
+        self.mode = mode
+        self.explanation_client = explanation_client
         self.incidents = IncidentRepository(session)
         self.plans = PlanRepository(session)
         self.recoveries = RecoveryRepository(session)
 
-    def start(self, incident_id: UUID) -> StartRecoveryResult:
+    def start(self, incident_id: UUID, *, request_id: str = "-") -> StartRecoveryResult:
         with self.session.begin():
             incident = self.incidents.lock_incident_by_id(incident_id)
             if incident is None:
@@ -106,9 +114,9 @@ class RecoveryWorkflow:
             )
             attempt = self._new_attempt(context, attempt_no=1, previous_id=None)
 
-        return self._execute_attempts(incident_id, context, attempt)
+        return self._execute_attempts(incident_id, context, attempt, request_id)
 
-    def resume(self, recovery_plan_id: UUID) -> StartRecoveryResult:
+    def resume(self, recovery_plan_id: UUID, *, request_id: str = "-") -> StartRecoveryResult:
         """Run an already committed DRAFT attempt after a dispatcher Modify."""
         with self.session.begin():
             attempt = self._lock_attempt(recovery_plan_id)
@@ -136,16 +144,41 @@ class RecoveryWorkflow:
                 )
             incident_id = attempt.incident_id
 
-        return self._execute_attempts(incident_id, context, attempt)
+        return self._execute_attempts(incident_id, context, attempt, request_id)
 
     def _execute_attempts(
-        self, incident_id: UUID, context: RecoveryContext, attempt: RecoveryPlan
+        self, incident_id: UUID, context: RecoveryContext, attempt: RecoveryPlan,
+        request_id: str,
     ) -> StartRecoveryResult:
         created: list[RecoveryAttemptView] = []
         while True:
+            explanation_source = "deterministic"
+            tool_trace: tuple[str, ...] = ()
+            structured_explanation = None
+            recovery_evidence = None
             try:
-                outcome = execute_recovery(context)
+                if self.mode == "agent":
+                    from app.modules.recovery.orchestration import execute_agent_attempt
+                    execution = execute_agent_attempt(
+                        context, attempt.id, attempt.attempt_no,
+                        attempt.previous_recovery_plan_id,
+                        self._deterministic_summary(context, len(created)),
+                        self.explanation_client,
+                    )
+                    outcome = execution.outcome
+                    explanation = execution.explanation
+                    explanation_source = execution.source
+                    tool_trace = execution.tool_trace
+                    structured_explanation = execution.structured_explanation
+                    recovery_evidence = execution.recovery_evidence
+                else:
+                    outcome = execute_recovery(context)
+                    explanation = self._deterministic_summary(context, len(created))
             except Exception as error:
+                logger.exception(
+                    "recovery_attempt request_id=%s incident_id=%s attempt_no=%s mode=%s failed",
+                    request_id, incident_id, attempt.attempt_no, self.mode,
+                )
                 with self.session.begin():
                     locked = self._lock_attempt(attempt.id)
                     locked.solver_status = RecoverySolverStatus.ERROR
@@ -167,6 +200,10 @@ class RecoveryWorkflow:
                     },
                 ) from error
             result = outcome.solver_result
+            logger.info(
+                "recovery_attempt request_id=%s incident_id=%s attempt_no=%s mode=%s solver_status=%s",
+                request_id, incident_id, attempt.attempt_no, explanation_source, result.status.value,
+            )
             if result.status is SolverStatus.INFEASIBLE:
                 with self.session.begin():
                     locked = self._lock_attempt(attempt.id)
@@ -242,7 +279,6 @@ class RecoveryWorkflow:
                     data={**self._view_data(failed), "manual_intervention_required": True},
                 )
 
-            explanation = self._deterministic_summary(context, len(created))
             with self.session.begin():
                 self._assert_base_still_current(incident_id, context.base_plan_id)
                 self.plans.lock_recovery_execution_facts(
@@ -281,10 +317,11 @@ class RecoveryWorkflow:
                 locked.solver_validation_summary = {
                     "feasible": True,
                     "validation_issue_count": 0,
-                    "deterministic": True,
+                    "explanation_source": explanation_source,
+                    "tool_trace": list(tool_trace),
+                    "explanation": structured_explanation,
+                    "recovery_evidence": recovery_evidence,
                 }
-                # The legacy column is required by the fixed P0 schema. This is
-                # a deterministic summary, not LLM/Agent generated content.
                 locked.agent_explanation = explanation
                 incident = self.incidents.lock_incident_by_id(incident_id)
                 if incident is None:

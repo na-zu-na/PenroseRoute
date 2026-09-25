@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.api.auth import Principal, authenticate_dispatch_user
-from app.api.dependencies import get_db, get_request_id
+from app.api.dependencies import get_db, get_request_id, get_recovery_mode, get_recovery_explanation_client
 from app.core.errors import AuthenticationError
 from app.core.responses import success_response
 from app.modules.recovery.deterministic_workflow import RecoveryWorkflow
@@ -17,6 +17,14 @@ from app.schemas.recovery import StartRecoveryRequest, StartRecoveryResponse
 
 
 router = APIRouter(prefix="/incidents", tags=["recovery"])
+
+
+def get_recovery_workflow(
+    db: Session = Depends(get_db),
+    mode: str = Depends(get_recovery_mode),
+    explanation_client=Depends(get_recovery_explanation_client),
+) -> RecoveryWorkflow:
+    return RecoveryWorkflow(db, mode=mode, explanation_client=explanation_client)
 
 
 def require_operations_user(principal: Principal = Depends(authenticate_dispatch_user)) -> Principal:
@@ -34,10 +42,10 @@ def start_recovery(
     incident_id: UUID,
     request: StartRecoveryRequest,
     request_id: Annotated[str, Depends(get_request_id)],
-    db: Annotated[Session, Depends(get_db)],
+    workflow: Annotated[RecoveryWorkflow, Depends(get_recovery_workflow)],
 ) -> ApiResponse[StartRecoveryResponse]:
     del request
-    result = RecoveryWorkflow(db).start(incident_id)
+    result = workflow.start(incident_id, request_id=request_id)
     code = "RECOVERY_PENDING_REVIEW" if result.outcome == "PENDING_REVIEW" else "NO_FEASIBLE_RECOVERY"
     message = (
         "A valid recovery candidate is ready for dispatcher review"

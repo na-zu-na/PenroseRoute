@@ -8,6 +8,86 @@ from datetime import datetime
 from app.integrations.agent.contracts import RecoveryEvidence
 
 
+def project_formal_evidence(context, outcome):
+    """Compare the formal candidate projection using only materialized facts."""
+    route_by_id = {route.id: route for route in context.routes}
+    before_assignment = {
+        item.order_id: (
+            route_by_id[item.vehicle_route_id].vehicle_id
+            if item.vehicle_route_id is not None else None
+        )
+        for item in context.plan_orders
+    }
+    after_assignment = before_assignment.copy()
+    target_ids = {item.order_id for item in context.target_orders}
+    for order_id in target_ids:
+        after_assignment[order_id] = None
+    solver_routes = {route.vehicle_id: route for route in outcome.solver_result.routes}
+    for route in outcome.solver_result.routes:
+        for stop in route.stops:
+            if stop.stop_type.value == "DELIVERY":
+                after_assignment[stop.order_id] = route.vehicle_id
+
+    rebuilt_route_ids = {
+        item.original_route_id for item in context.target_orders
+        if item.original_route_id is not None
+    }
+    after_distances = []
+    after_durations = []
+    remaining_solver_routes = solver_routes.copy()
+    for base_route in context.routes:
+        solved = remaining_solver_routes.pop(base_route.vehicle_id, None)
+        preserved = (
+            base_route.stops if base_route.id not in rebuilt_route_ids
+            else tuple(stop for stop in base_route.stops if stop.order_id not in target_ids or stop.status == "COMPLETED")
+        )
+        if not preserved and solved is None:
+            continue
+        after_distances.append(solved.distance_meters if solved else base_route.distance_meters)
+        after_durations.append(solved.duration_seconds if solved else base_route.duration_seconds)
+    after_distances.extend(route.distance_meters for route in remaining_solver_routes.values())
+    after_durations.extend(route.duration_seconds for route in remaining_solver_routes.values())
+
+    reassigned = tuple(
+        {"order_id": order_id, "from_vehicle_id": before_assignment[order_id],
+         "to_vehicle_id": after_assignment[order_id]}
+        for order_id in sorted(before_assignment)
+        if before_assignment[order_id] != after_assignment[order_id]
+    )
+    handovers = tuple(sorted(
+        item.order_id for item in context.target_orders if item.handover_required
+    ))
+    risks = ["距离和行驶时间为地理估算，未接入实时道路交通。"]
+    if handovers:
+        risks.append("货物交接尚待现场执行确认。")
+    risks.append("候选尚未批准；执行前需确认位置和订单状态仍与快照一致。")
+    return RecoveryEvidence(
+        reassigned_orders=reassigned,
+        unchanged_order_ids=tuple(sorted(set(before_assignment) - target_ids)),
+        changed_order_ids=tuple(sorted(target_ids)),
+        handover_order_ids=handovers,
+        changed_vehicle_ids=tuple(sorted(
+            {route.vehicle_id for route in outcome.solver_result.routes}
+            | {route_by_id[route_id].vehicle_id for route_id in rebuilt_route_ids}
+        )),
+        before={
+            "assigned_order_count": sum(value is not None for value in before_assignment.values()),
+            "unassigned_order_count": sum(value is None for value in before_assignment.values()),
+            "vehicle_count": len(context.routes),
+            "total_distance_meters": sum(route.distance_meters for route in context.routes),
+            "total_duration_seconds": sum(route.duration_seconds for route in context.routes),
+        },
+        after={
+            "assigned_order_count": sum(value is not None for value in after_assignment.values()),
+            "unassigned_order_count": sum(value is None for value in after_assignment.values()),
+            "vehicle_count": len(after_distances),
+            "total_distance_meters": sum(after_distances),
+            "total_duration_seconds": sum(after_durations),
+        },
+        remaining_risks=tuple(risks),
+    )
+
+
 def epoch(value):
     from app.modules.planning.service import timestamp
     return timestamp(datetime.fromisoformat(value))

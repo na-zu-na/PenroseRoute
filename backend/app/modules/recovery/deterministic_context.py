@@ -109,6 +109,17 @@ class PlanOrderSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ImpactSnapshot:
+    order_id: UUID
+    execution_status_snapshot: str
+    risk_status_snapshot: str
+    requires_replanning: bool
+    handover_required: bool
+    was_completed: bool
+    impact_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class RecoveryContext:
     incident_id: UUID
     incident_type: str
@@ -124,6 +135,9 @@ class RecoveryContext:
     routes: tuple[RouteSnapshot, ...]
     plan_orders: tuple[PlanOrderSnapshot, ...]
     locations: tuple[RoutingLocation, ...]
+    impact_snapshots: tuple[ImpactSnapshot, ...]
+    incident_location_id: UUID | None
+    delay_seconds: int | None
 
 
 def _now() -> datetime:
@@ -359,6 +373,20 @@ def materialize_recovery_context(
         routes=route_snapshots,
         plan_orders=plan_order_snapshots,
         locations=tuple(locations.values()),
+        impact_snapshots=tuple(
+            ImpactSnapshot(
+                order_id=item.order_id,
+                execution_status_snapshot=item.execution_status_snapshot.value,
+                risk_status_snapshot=item.risk_status_snapshot.value,
+                requires_replanning=item.requires_replanning,
+                handover_required=item.handover_required,
+                was_completed=item.was_completed,
+                impact_type=item.impact_type.value,
+            )
+            for item in sorted(incident.affected_orders, key=lambda item: item.order_id)
+        ),
+        incident_location_id=incident.incident_location_id,
+        delay_seconds=incident.delay_seconds,
     )
 
 

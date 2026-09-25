@@ -2,7 +2,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.api.auth import Principal
-from app.api.dependencies import get_request_id
+from app.api.dependencies import get_request_id, get_recovery_mode, get_recovery_explanation_client
 from app.api.routes.recovery import require_operations_user
 from app.core.responses import success_response
 from app.modules.decisions.service import DeterministicDecisionService
@@ -21,9 +21,12 @@ class DecisionCommand(BaseModel):
         return value.strip()
 
 
-def get_decision_service():
+def get_decision_service(
+    mode: str = Depends(get_recovery_mode),
+    explanation_client=Depends(get_recovery_explanation_client),
+):
     from app.db.session import SessionLocal
-    return DeterministicDecisionService(SessionLocal)
+    return DeterministicDecisionService(SessionLocal, recovery_mode=mode, explanation_client=explanation_client)
 
 
 def envelope(data, *, code: str, message: str, request_id: str):
@@ -48,7 +51,7 @@ def reject(recovery_id: UUID, command: DecisionCommand,
 def modify(recovery_id: UUID, command: DecisionCommand,
            principal: Principal = Depends(require_operations_user), service=Depends(get_decision_service),
            request_id: str = Depends(get_request_id)):
-    data = service.modify(recovery_id, command.decision_reason, principal.subject)
+    data = service.modify(recovery_id, command.decision_reason, principal.subject, request_id=request_id)
     return envelope(data, code="RECOVERY_MODIFICATION_PROCESSED",
                     message="The current candidate was cancelled and the new recovery attempt was processed",
                     request_id=request_id)
