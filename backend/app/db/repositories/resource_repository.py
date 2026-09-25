@@ -86,6 +86,21 @@ class ResourceRepository:
         )
         return self.session.scalar(statement)
 
+    def lock_order_by_id(self, order_id: UUID) -> Order | None:
+        statement = select(Order).where(Order.id == order_id).with_for_update()
+        return self.session.scalar(statement)
+
+    def lock_orders_by_ids(self, order_ids: list[UUID]) -> list[Order]:
+        if not order_ids:
+            return []
+        statement = (
+            select(Order)
+            .where(Order.id.in_(order_ids))
+            .order_by(Order.id)
+            .with_for_update()
+        )
+        return list(self.session.scalars(statement))
+
     def add_location(self, location: Location) -> None:
         self.session.add(location)
 

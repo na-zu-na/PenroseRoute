@@ -2,12 +2,21 @@ from datetime import date
 from uuid import UUID
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app.db.models import DeliveryPlan, DeliveryPlanOrder, RouteStop, VehicleRoute
+from app.db.models import (
+    DeliveryPlan,
+    DeliveryPlanOrder,
+    Incident,
+    Order,
+    RouteStop,
+    Vehicle,
+    VehicleRoute,
+)
 from app.db.models.planning import (
     DeliveryPlanStatus,
     PlanOrderAssignmentStatus,
+    RouteStatus,
 )
 
 
@@ -19,6 +28,38 @@ class PlanRepository:
         statement = select(DeliveryPlan).where(
             DeliveryPlan.business_date == business_date,
             DeliveryPlan.status == DeliveryPlanStatus.CURRENT,
+        )
+        return self.session.scalar(statement)
+
+    def get_current_plan_for_operations(
+        self, business_date: date
+    ) -> DeliveryPlan | None:
+        statement = (
+            select(DeliveryPlan)
+            .where(
+                DeliveryPlan.business_date == business_date,
+                DeliveryPlan.status == DeliveryPlanStatus.CURRENT,
+            )
+            .options(
+                selectinload(DeliveryPlan.plan_orders)
+                .joinedload(DeliveryPlanOrder.order)
+                .joinedload(Order.merchant),
+                selectinload(DeliveryPlan.routes)
+                .joinedload(VehicleRoute.vehicle)
+                .joinedload(Vehicle.current_location),
+                selectinload(DeliveryPlan.routes).joinedload(
+                    VehicleRoute.driver
+                ),
+                selectinload(DeliveryPlan.routes).joinedload(
+                    VehicleRoute.vehicle_driver_assignment
+                ),
+                selectinload(DeliveryPlan.routes)
+                .selectinload(VehicleRoute.stops)
+                .joinedload(RouteStop.order),
+                selectinload(DeliveryPlan.incidents).selectinload(
+                    Incident.recovery_plans
+                ),
+            )
         )
         return self.session.scalar(statement)
 
@@ -120,6 +161,65 @@ class PlanRepository:
 
     def get_route_stop_by_id(self, stop_id: UUID) -> RouteStop | None:
         return self.session.get(RouteStop, stop_id)
+
+    def lock_route_stop_by_id(self, stop_id: UUID) -> RouteStop | None:
+        statement = select(RouteStop).where(RouteStop.id == stop_id).with_for_update()
+        return self.session.scalar(statement)
+
+    def lock_route_by_id(self, route_id: UUID) -> VehicleRoute | None:
+        statement = (
+            select(VehicleRoute)
+            .where(VehicleRoute.id == route_id)
+            .with_for_update()
+        )
+        return self.session.scalar(statement)
+
+    def lock_active_route_for_plan_vehicle(
+        self, delivery_plan_id: UUID, vehicle_id: UUID
+    ) -> VehicleRoute | None:
+        statement = (
+            select(VehicleRoute)
+            .where(
+                VehicleRoute.delivery_plan_id == delivery_plan_id,
+                VehicleRoute.vehicle_id == vehicle_id,
+                VehicleRoute.status == RouteStatus.ACTIVE,
+            )
+            .with_for_update()
+        )
+        return self.session.scalar(statement)
+
+    def lock_plan_by_id(self, plan_id: UUID) -> DeliveryPlan | None:
+        statement = (
+            select(DeliveryPlan)
+            .where(DeliveryPlan.id == plan_id)
+            .with_for_update()
+        )
+        return self.session.scalar(statement)
+
+    def list_route_stops_with_orders(self, route_id: UUID) -> list[RouteStop]:
+        statement = (
+            select(RouteStop)
+            .where(RouteStop.vehicle_route_id == route_id)
+            .options(joinedload(RouteStop.order))
+            .order_by(RouteStop.sequence_no)
+        )
+        return list(self.session.scalars(statement))
+
+    def list_route_plan_orders(
+        self, route_id: UUID
+    ) -> list[DeliveryPlanOrder]:
+        statement = (
+            select(DeliveryPlanOrder)
+            .join(DeliveryPlanOrder.order)
+            .where(
+                DeliveryPlanOrder.vehicle_route_id == route_id,
+                DeliveryPlanOrder.assignment_status
+                == PlanOrderAssignmentStatus.ASSIGNED,
+            )
+            .options(joinedload(DeliveryPlanOrder.order))
+            .order_by(Order.order_code)
+        )
+        return list(self.session.scalars(statement))
 
     def get_latest_plan_for_business_date(
         self, business_date: date

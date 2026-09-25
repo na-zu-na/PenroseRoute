@@ -41,6 +41,20 @@ class FleetRepository:
     def get_driver_by_id(self, driver_id: UUID) -> Driver | None:
         return self.session.get(Driver, driver_id)
 
+    def lock_driver_by_id(self, driver_id: UUID) -> Driver | None:
+        statement = select(Driver).where(Driver.id == driver_id).with_for_update()
+        return self.session.scalar(statement)
+
+    def lock_assignment_by_id(
+        self, assignment_id: UUID
+    ) -> VehicleDriverAssignment | None:
+        statement = (
+            select(VehicleDriverAssignment)
+            .where(VehicleDriverAssignment.id == assignment_id)
+            .with_for_update()
+        )
+        return self.session.scalar(statement)
+
     def list_vehicles(
         self,
         *,

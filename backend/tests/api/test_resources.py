@@ -195,7 +195,7 @@ def test_vehicle_resource_endpoints_and_incident_boundary() -> None:
 
         unavailable_resource = await client.patch(
             f"/api/vehicles/{vehicle_id}/status",
-            json={"status": "UNAVAILABLE"},
+            json={"status": "UNAVAILABLE", "business_date": "2026-09-25"},
         )
         assert unavailable_resource.status_code == 200
         restored = await client.patch(
@@ -225,12 +225,21 @@ def test_vehicle_resource_endpoints_and_incident_boundary() -> None:
         vehicle.status = ResourceStatus.ACTIVE
         session.commit()
 
+        missing_business_date = await client.patch(
+            f"/api/vehicles/{vehicle_id}/status",
+            json={"status": "UNAVAILABLE"},
+        )
+        assert missing_business_date.status_code == 422
+        assert missing_business_date.json()["code"] == "VALIDATION_ERROR"
+        session.refresh(vehicle)
+        assert vehicle.status == ResourceStatus.ACTIVE
+
         unavailable = await client.patch(
             f"/api/vehicles/{vehicle_id}/status",
             json={"status": "UNAVAILABLE", "business_date": "2026-09-25"},
         )
         assert unavailable.status_code == 409
-        assert unavailable.json()["code"] == "VEHICLE_INCIDENT_WORKFLOW_REQUIRED"
+        assert unavailable.json()["code"] == "VEHICLE_NOT_EXECUTING_ROUTE"
         session.refresh(vehicle)
         assert vehicle.status == ResourceStatus.ACTIVE
 

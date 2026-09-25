@@ -44,6 +44,11 @@ class FleetService:
             )
         return vehicle
 
+    def get_vehicle_status(self, vehicle_id: UUID) -> ResourceStatus:
+        status = self.get_vehicle(vehicle_id).status
+        self.session.rollback()
+        return status
+
     def create_vehicle(
         self,
         *,

@@ -5,9 +5,16 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, get_request_id
+from app.core.errors import BusinessError
 from app.core.responses import success_response
+from app.db.models.fleet import ResourceStatus as VehicleResourceStatus
+from app.modules.incidents.workflow import VehicleIncidentWorkflow
 from app.modules.resources.fleet import FleetService
 from app.schemas.common import ApiResponse, PaginatedData, PaginationParams
+from app.schemas.incidents import (
+    VehicleIncidentStatusResponse,
+    VehicleUnavailableResponse,
+)
 from app.schemas.resources import (
     ResourceStatus,
     VehicleCreate,
@@ -101,8 +108,33 @@ def update_vehicle_status(
     request: VehicleStatusUpdate,
     request_id: Annotated[str, Depends(get_request_id)],
     db: Annotated[Session, Depends(get_db)],
-) -> ApiResponse[VehicleResponse]:
-    vehicle = FleetService(db).update_vehicle_status(
+) -> ApiResponse[VehicleResponse | VehicleIncidentStatusResponse]:
+    fleet = FleetService(db)
+    current_status = fleet.get_vehicle_status(vehicle_id)
+    if (
+        current_status is VehicleResourceStatus.ACTIVE
+        and request.status is ResourceStatus.UNAVAILABLE
+    ):
+        if request.business_date is None:
+            raise BusinessError(
+                code="VALIDATION_ERROR",
+                message="business_date is required for ACTIVE to UNAVAILABLE",
+            )
+        result = VehicleIncidentWorkflow(db).report_unavailable(
+            business_date=request.business_date,
+            vehicle_id=vehicle_id,
+        )
+        data = VehicleIncidentStatusResponse(
+            vehicle=VehicleResponse.model_validate(result.vehicle),
+            incident=VehicleUnavailableResponse.model_validate(result),
+        )
+        return success_response(
+            data=data,
+            code="VEHICLE_INCIDENT_CREATED",
+            message="Vehicle unavailable incident assessed",
+            request_id=request_id,
+        )
+    vehicle = fleet.update_vehicle_status(
         vehicle_id,
         status=request.status.value,
         business_date=request.business_date,
