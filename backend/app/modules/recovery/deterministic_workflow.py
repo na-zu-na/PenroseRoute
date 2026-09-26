@@ -49,6 +49,7 @@ from app.modules.recovery.deterministic_context import (
     materialize_recovery_context,
 )
 from app.modules.recovery.deterministic_orchestration import execute_recovery
+from app.modules.planning.comparison import compare_plan_snapshots
 
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,39 @@ class RecoveryWorkflow:
                     )
                 locked = self._lock_attempt(attempt.id)
                 candidate = self._create_candidate(context, result)
+                if self.mode == "agent":
+                    from app.modules.recovery.evidence import (
+                        evidence_from_plan_comparison,
+                        explanation_from_plan_comparison,
+                    )
+
+                    base_snapshot = self.plans.get_plan_with_routes(
+                        context.base_plan_id
+                    )
+                    candidate_snapshot = self.plans.get_plan_with_routes(
+                        candidate.id
+                    )
+                    if base_snapshot is None or candidate_snapshot is None:
+                        raise IntegrationError(
+                            code="RECOVERY_COMPARISON_SNAPSHOT_MISSING",
+                            message="Persisted recovery comparison snapshot is missing",
+                        )
+                    comparison = compare_plan_snapshots(
+                        recovery_plan_id=attempt.id,
+                        comparison_at=attempt.created_at,
+                        base=base_snapshot,
+                        candidate=candidate_snapshot,
+                        reviewable=True,
+                    )
+                    canonical_evidence = evidence_from_plan_comparison(comparison)
+                    canonical_text, canonical_structured = (
+                        explanation_from_plan_comparison(canonical_evidence)
+                    )
+                    explanation = f"{explanation}\n{canonical_text}"
+                    structured_explanation = canonical_structured.model_dump(
+                        mode="json"
+                    )
+                    recovery_evidence = canonical_evidence.model_dump(mode="json")
                 locked.candidate_delivery_plan_id = candidate.id
                 locked.status = RecoveryPlanStatus.PENDING_REVIEW
                 locked.solver_status = RecoverySolverStatus.FEASIBLE

@@ -113,22 +113,55 @@ class OrderReassignment(Contract):
 
 
 class PlanMetrics(Contract):
-    assigned_order_count: int = Field(ge=0)
-    unassigned_order_count: int = Field(ge=0)
-    vehicle_count: int = Field(ge=0)
-    total_distance_meters: int = Field(ge=0)
-    total_duration_seconds: int = Field(ge=0)
+    assigned_order_count: int | None = Field(default=None, ge=0)
+    unassigned_order_count: int | None = Field(default=None, ge=0)
+    vehicle_count: int | None = Field(default=None, ge=0)
+    total_distance_meters: int | None = Field(default=None, ge=0)
+    total_duration_seconds: int | None = Field(default=None, ge=0)
+
+
+class ComparisonOrderFact(Contract):
+    order_id: UUID
+    base_assignment_status: str | None = None
+    candidate_assignment_status: str | None = None
+    base_vehicle_id: UUID | None = None
+    candidate_vehicle_id: UUID | None = None
+    assignment_changed: bool
+    route_task_changed: bool
+    base_delivery_eta: datetime | None = None
+    candidate_delivery_eta: datetime | None = None
+    eta_delta_seconds: int | None = None
+    eta_basis: str | None = None
+    eta_unavailable_reason: str | None = None
+
+
+class RemainingMetricsFact(Contract):
+    base_distance_meters: int | None = None
+    candidate_distance_meters: int | None = None
+    delta_distance_meters: int | None = None
+    base_duration_seconds: int | None = None
+    candidate_duration_seconds: int | None = None
+    delta_duration_seconds: int | None = None
+    reason: str | None = None
 
 
 class RecoveryEvidence(Contract):
     """Business-layer comparison of the full candidate, after solver validation."""
+    source: Literal["LEGACY_PROJECTION", "P1_PLAN_COMPARISON"] = "LEGACY_PROJECTION"
+    comparison_at: datetime | None = None
+    comparison_time_basis: str | None = None
+    reviewable: bool | None = None
     reassigned_orders: tuple[OrderReassignment, ...] = ()
     unchanged_order_ids: tuple[UUID, ...] = ()
     changed_order_ids: tuple[UUID, ...] = ()
+    unassigned_order_ids: tuple[UUID, ...] = ()
     handover_order_ids: tuple[UUID, ...] = ()
+    frozen_completed_order_ids: tuple[UUID, ...] = ()
+    orders: tuple[ComparisonOrderFact, ...] = ()
     before: PlanMetrics
     after: PlanMetrics
     changed_vehicle_ids: tuple[UUID, ...] = ()
+    remaining_metrics: RemainingMetricsFact | None = None
     remaining_risks: tuple[str, ...] = ()
 
 

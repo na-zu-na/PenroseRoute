@@ -1,91 +1,175 @@
-"""Deterministic full-candidate projection. No LLM or database access here.
+"""Deterministic evidence adapters; no LLM or database access here.
 
-The merge follows SqlRecoveryApplication.save_candidate: retained prefixes are
-extended on the same vehicle; untouched routes and memberships remain present.
+The formal P1 path adapts the canonical U01 comparison. ``project_evidence``
+remains for the legacy in-memory workflow and is not used by the formal API.
 """
 import json
 from datetime import datetime
-from app.integrations.agent.contracts import RecoveryEvidence
+from app.integrations.agent.contracts import (
+    ComparisonOrderFact,
+    RecoveryEvidence,
+    RecoveryExplanation,
+    RemainingMetricsFact,
+)
 
 
-def project_formal_evidence(context, outcome):
-    """Compare the formal candidate projection using only materialized facts."""
-    route_by_id = {route.id: route for route in context.routes}
-    before_assignment = {
-        item.order_id: (
-            route_by_id[item.vehicle_route_id].vehicle_id
-            if item.vehicle_route_id is not None else None
+def evidence_from_plan_comparison(comparison):
+    """Adapt the canonical U01 comparison; never recalculate its semantics."""
+    orders = tuple(
+        ComparisonOrderFact(
+            order_id=item.order_id,
+            base_assignment_status=item.base_assignment_status,
+            candidate_assignment_status=item.candidate_assignment_status,
+            base_vehicle_id=item.base_vehicle_id,
+            candidate_vehicle_id=item.candidate_vehicle_id,
+            assignment_changed=item.assignment_changed,
+            route_task_changed=item.route_task_changed,
+            base_delivery_eta=item.base_delivery_eta,
+            candidate_delivery_eta=item.candidate_delivery_eta,
+            eta_delta_seconds=item.eta_delta_seconds,
+            eta_basis=item.eta_basis,
+            eta_unavailable_reason=item.eta_unavailable_reason,
         )
-        for item in context.plan_orders
-    }
-    after_assignment = before_assignment.copy()
-    target_ids = {item.order_id for item in context.target_orders}
-    for order_id in target_ids:
-        after_assignment[order_id] = None
-    solver_routes = {route.vehicle_id: route for route in outcome.solver_result.routes}
-    for route in outcome.solver_result.routes:
-        for stop in route.stops:
-            if stop.stop_type.value == "DELIVERY":
-                after_assignment[stop.order_id] = route.vehicle_id
-
-    rebuilt_route_ids = {
-        item.original_route_id for item in context.target_orders
-        if item.original_route_id is not None
-    }
-    after_distances = []
-    after_durations = []
-    remaining_solver_routes = solver_routes.copy()
-    for base_route in context.routes:
-        solved = remaining_solver_routes.pop(base_route.vehicle_id, None)
-        preserved = (
-            base_route.stops if base_route.id not in rebuilt_route_ids
-            else tuple(stop for stop in base_route.stops if stop.order_id not in target_ids or stop.status == "COMPLETED")
-        )
-        if not preserved and solved is None:
-            continue
-        after_distances.append(solved.distance_meters if solved else base_route.distance_meters)
-        after_durations.append(solved.duration_seconds if solved else base_route.duration_seconds)
-    after_distances.extend(route.distance_meters for route in remaining_solver_routes.values())
-    after_durations.extend(route.duration_seconds for route in remaining_solver_routes.values())
-
-    reassigned = tuple(
-        {"order_id": order_id, "from_vehicle_id": before_assignment[order_id],
-         "to_vehicle_id": after_assignment[order_id]}
-        for order_id in sorted(before_assignment)
-        if before_assignment[order_id] != after_assignment[order_id]
+        for item in comparison.orders
     )
-    handovers = tuple(sorted(
-        item.order_id for item in context.target_orders if item.handover_required
+    reassigned = tuple(
+        {
+            "order_id": item.order_id,
+            "from_vehicle_id": item.base_vehicle_id,
+            "to_vehicle_id": item.candidate_vehicle_id,
+        }
+        for item in comparison.orders
+        if item.base_vehicle_id is not None
+        and item.candidate_vehicle_id is not None
+        and item.base_vehicle_id != item.candidate_vehicle_id
+    )
+    changed = tuple(sorted(
+        item.order_id for item in comparison.orders
+        if item.assignment_changed or item.route_task_changed
     ))
-    risks = ["距离和行驶时间为地理估算，未接入实时道路交通。"]
+    unchanged = tuple(sorted(
+        item.order_id for item in comparison.orders
+        if not item.assignment_changed and not item.route_task_changed
+    ))
+    unassigned = tuple(sorted(
+        item.order_id for item in comparison.orders
+        if item.candidate_assignment_status == "UNASSIGNED"
+    ))
+    handovers = tuple(sorted({
+        item.order_id for item in comparison.stop_changes
+        if item.stop_type == "HANDOVER" and item.change_type != "REMOVED"
+    }))
+    risks = []
+    if not comparison.reviewable:
+        risks.append("基础计划或候选状态已变化；该比较只可审计，不再代表可审批候选。")
+    unavailable_eta = tuple(
+        item for item in orders if item.eta_unavailable_reason is not None
+    )
+    if unavailable_eta:
+        risks.append("部分订单 ETA 不可比较；原因已按订单保存在确定性比较事实中。")
+    if comparison.remaining_metrics.reason:
+        risks.append(
+            "剩余距离与时长不可比较："
+            f"{comparison.remaining_metrics.reason}。"
+        )
     if handovers:
         risks.append("货物交接尚待现场执行确认。")
-    risks.append("候选尚未批准；执行前需确认位置和订单状态仍与快照一致。")
+    risks.append("候选尚未批准，不能描述为当前执行计划。")
     return RecoveryEvidence(
+        source="P1_PLAN_COMPARISON",
+        comparison_at=comparison.comparison_at,
+        comparison_time_basis=comparison.comparison_time_basis,
+        reviewable=comparison.reviewable,
         reassigned_orders=reassigned,
-        unchanged_order_ids=tuple(sorted(set(before_assignment) - target_ids)),
-        changed_order_ids=tuple(sorted(target_ids)),
+        unchanged_order_ids=unchanged,
+        changed_order_ids=changed,
+        unassigned_order_ids=unassigned,
         handover_order_ids=handovers,
-        changed_vehicle_ids=tuple(sorted(
-            {route.vehicle_id for route in outcome.solver_result.routes}
-            | {route_by_id[route_id].vehicle_id for route_id in rebuilt_route_ids}
-        )),
+        frozen_completed_order_ids=comparison.frozen_completed_order_ids,
+        orders=orders,
         before={
-            "assigned_order_count": sum(value is not None for value in before_assignment.values()),
-            "unassigned_order_count": sum(value is None for value in before_assignment.values()),
-            "vehicle_count": len(context.routes),
-            "total_distance_meters": sum(route.distance_meters for route in context.routes),
-            "total_duration_seconds": sum(route.duration_seconds for route in context.routes),
+            "assigned_order_count": sum(
+                item.base_assignment_status == "ASSIGNED" for item in orders
+            ),
+            "unassigned_order_count": sum(
+                item.base_assignment_status == "UNASSIGNED" for item in orders
+            ),
         },
         after={
-            "assigned_order_count": sum(value is not None for value in after_assignment.values()),
-            "unassigned_order_count": sum(value is None for value in after_assignment.values()),
-            "vehicle_count": len(after_distances),
-            "total_distance_meters": sum(after_distances),
-            "total_duration_seconds": sum(after_durations),
+            "assigned_order_count": sum(
+                item.candidate_assignment_status == "ASSIGNED" for item in orders
+            ),
+            "unassigned_order_count": sum(
+                item.candidate_assignment_status == "UNASSIGNED" for item in orders
+            ),
         },
+        changed_vehicle_ids=comparison.affected_vehicle_ids,
+        remaining_metrics=RemainingMetricsFact.model_validate(
+            {
+                name: getattr(comparison.remaining_metrics, name)
+                for name in RemainingMetricsFact.model_fields
+            }
+        ),
         remaining_risks=tuple(risks),
     )
+
+
+def explanation_from_plan_comparison(evidence: RecoveryEvidence):
+    """Render canonical comparison facts without asking a model to fill gaps."""
+    reassigned = "；".join(
+        f"{item.order_id}: {item.from_vehicle_id} → {item.to_vehicle_id}"
+        for item in evidence.reassigned_orders
+    ) or "无"
+    eta_parts = []
+    for item in evidence.orders:
+        if item.eta_delta_seconds is not None:
+            eta_parts.append(f"{item.order_id}: {item.eta_delta_seconds:+d} 秒")
+        elif item.eta_unavailable_reason:
+            eta_parts.append(
+                f"{item.order_id}: 不可计算（{item.eta_unavailable_reason}）"
+            )
+    metrics = evidence.remaining_metrics
+    metrics_text = (
+        f"剩余距离/时长不可计算（{metrics.reason}）"
+        if metrics and metrics.reason
+        else (
+            "剩余距离变化 "
+            f"{metrics.delta_distance_meters} 米，时长变化 "
+            f"{metrics.delta_duration_seconds} 秒"
+            if metrics else "未提供剩余距离/时长事实"
+        )
+    )
+    structured = RecoveryExplanation(
+        summary=(
+            "U01 在同一 Base/Candidate 与 Attempt 记录时点生成比较；"
+            f"候选可审核={evidence.reviewable}，尚未生效。"
+        ),
+        impact_explanation=(
+            "Completed Freeze 订单："
+            f"{', '.join(map(str, evidence.frozen_completed_order_ids)) or '无'}；"
+            "Handover 订单："
+            f"{', '.join(map(str, evidence.handover_order_ids)) or '无'}。"
+        ),
+        replanning_explanation=(
+            f"订单改派：{reassigned}；"
+            "保持不变的订单："
+            f"{', '.join(map(str, evidence.unchanged_order_ids)) or '无'}。"
+        ),
+        result_explanation=(
+            "候选未分配订单："
+            f"{', '.join(map(str, evidence.unassigned_order_ids)) or '无'}；"
+            f"ETA：{'；'.join(eta_parts) or '无可比较订单'}；{metrics_text}。"
+        ),
+        remaining_risks=evidence.remaining_risks,
+    )
+    flat = "\n".join((
+        structured.summary,
+        structured.impact_explanation,
+        structured.replanning_explanation,
+        structured.result_explanation,
+        "剩余风险：" + "；".join(structured.remaining_risks),
+    ))
+    return flat, structured
 
 
 def epoch(value):

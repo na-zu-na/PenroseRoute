@@ -39,7 +39,13 @@ def explanation_facts(context, observation):
                 ExplanationFact(id="risks", text="剩余风险：" + "；".join(evidence.remaining_risks)),
             ])
         else:
-            facts.append(ExplanationFact(id="risks", text="适配器未提供全计划差异与剩余风险证据，无法确认订单改派、未变化任务或全计划指标。"))
+            facts.append(ExplanationFact(
+                id="risks",
+                text=(
+                    "当前阶段未提供全计划差异；候选持久化后由正式 U01 比较生成。"
+                    "在此之前不推断订单改派、未变化任务或全计划指标。"
+                ),
+            ))
     elif observation.solver.status == "INFEASIBLE":
         facts.append(ExplanationFact(id="next", text="本次尝试不创建候选；是否存在下一范围由业务规则判断，Agent 不改变范围。"))
     else:
