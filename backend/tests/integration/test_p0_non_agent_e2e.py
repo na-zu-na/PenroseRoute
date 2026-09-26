@@ -28,8 +28,11 @@ from app.modules.decisions.service import DeterministicDecisionService
 
 
 @contextmanager
-def demo_client(clock, *, recovery_mode="deterministic", explanation_client=None) -> Iterator[tuple[TestClient, object]]:
-    connection = engine.connect()
+def demo_client(
+    clock, *, recovery_mode="deterministic", explanation_client=None,
+    database_engine=engine,
+) -> Iterator[tuple[TestClient, object]]:
+    connection = database_engine.connect()
     outer_transaction = connection.begin()
     previous_overrides = app.dependency_overrides.copy()
 

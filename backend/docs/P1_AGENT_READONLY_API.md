@@ -33,7 +33,7 @@ Content-Type: application/json
 - “为什么订单 <UUID> 有风险”，context 传 business_date。
 - “这条提醒 <UUID> 为什么出现”，context 传 business_date。
 
-后两项目前返回 ALERT_QUERY_UNAVAILABLE，因为正式 U06 提醒查询契约尚未交付。不要把这一响应解释为无风险或无提醒。
+提醒解释读取正式 Alert 只读服务。按订单查询该日期的活动及历史提醒，按提醒 ID 查询单条提醒；已解除提醒使用当时保存的变更证据快照。没有匹配项时返回 `ALERT_NOT_FOUND`，不会从当前订单状态推测历史原因。
 
 缺日期或 ID 返回 NEEDS_INPUT。下一次提交 context_token，并在 message 中回答日期、明确标注的对象 ID 或“继续”；也可通过 context 提供选择。签名上下文仅保存受控选择和待完成查询，不保存聊天文本。更换日期清除上一日期的对象选择。
 
@@ -54,7 +54,7 @@ Content-Type: application/json
 - observations：每项只读服务返回的物化事实、as_of、facts、truncated、missing_reasons。
 - context/context_token：下一轮受控对象选择。
 
-运营快照的 AT_RISK 数与持久化活动提醒数具有不同口径和时点。当前 U06 查询未接入时，后者是 null 而不是 0。
+运营快照的 AT_RISK 数与持久化活动提醒数具有不同口径和时点。`active_alert_count` 和 `alert_reason_counts` 来自持久化的活动提醒，`alerts_as_of` 是该日期提醒最近一次评估时间。
 
 “生成正常计划/启动恢复/批准/修改/执行 SQL”等请求只返回正式 API 提示，不执行写操作。正常规划、异常创建、Recovery 和审批继续使用原业务接口。
 

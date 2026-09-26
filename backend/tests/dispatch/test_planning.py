@@ -65,4 +65,6 @@ def test_real_resource_and_risk_queries(database):
         s.get(Order, ids["order"]).risk_status = "AT_RISK"
     data = query.operations(day)
     assert data["current_plan"] is None
-    assert "ALERT_QUERY_UNAVAILABLE" in data["missing_reasons"]
+    assert data["active_alert_count"] == 0
+    assert data["alert_reason_counts"] == {}
+    assert "ALERT_QUERY_UNAVAILABLE" not in data["missing_reasons"]

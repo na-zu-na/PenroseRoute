@@ -77,6 +77,26 @@ class AlertRepository:
         ))
         return items, total
 
+    def get_alert(self, alert_id: UUID) -> RiskAlert | None:
+        return self.session.get(RiskAlert, alert_id)
+
+    def list_alerts_for_order(
+        self, business_date: date, order_id: UUID,
+    ) -> list[RiskAlert]:
+        return list(self.session.scalars(
+            select(RiskAlert).where(
+                RiskAlert.business_date == business_date,
+                RiskAlert.order_id == order_id,
+            ).order_by(RiskAlert.detected_at.desc(), RiskAlert.id)
+        ))
+
+    def list_changes_for_alert(self, alert_id: UUID) -> list[RiskAlertChange]:
+        return list(self.session.scalars(
+            select(RiskAlertChange).where(RiskAlertChange.alert_id == alert_id)
+            .options(joinedload(RiskAlertChange.alert))
+            .order_by(RiskAlertChange.change_id)
+        ))
+
     def list_changes(self, after: int, limit: int) -> list[RiskAlertChange]:
         return list(self.session.scalars(
             select(RiskAlertChange).where(RiskAlertChange.change_id > after)

@@ -22,16 +22,16 @@
 
 读取业务服务后物化 JSON，关闭 Session 后才调用模型。正常业务数据库异常返回 FAILED；缺日期或实体返回 NEEDS_INPUT；无 Current Plan 不从其他日期或 Order 标志拼凑当前计划。
 
-## Task 4：运营摘要完成；正式 Alert 解释等待非 Agent Task 7
+## Task 4：运营摘要与正式 Alert 解释 — 完成
 
 已提供业务日期、Current Plan/版本、运营计算时点、未完成和 AT_RISK 订单数、未解决 Incident 数、待审核 Candidate 数、as_of、facts 和 truncated。
 
-已支持 order_id/alert_id 选择和跨日期清除；缺实体时澄清。但当前仓库只有 U06 实体、Repository、确定性生命周期服务，尚无计划要求的 Task 7 活动/历史/游标查询服务。因此：
+已支持 order_id/alert_id 选择和跨日期清除；缺实体时澄清。Agent 已接入正式 AlertQueryService：
 
-- 活动提醒数、原因计数和提醒数据返回 null，missing_reasons 包含 ALERT_QUERY_UNAVAILABLE。
-- 回复明确“提醒数据不可用”，绝不查询 Order.risk_status 冒充持久化 Alert。
-- Agent 不调用 AlertRepository、风险评估服务或扫描器，不新增提醒表、Migration 或 Worker。
-- 尚未实现真实 Alert Snapshot 的按需解释；需 Task 7 正式 DTO/签名到位后接入，不引入虚构兼容层。
+- 运营摘要返回持久化活动提醒数、原因分布和最近评估时间，并明确其与 AT_RISK 订单数口径不同。
+- 按订单或提醒 ID 读取活动及历史提醒；已解除提醒根据 RiskAlertChange 的证据快照解释。
+- 没有匹配提醒时返回 ALERT_NOT_FOUND，不编造原因，也不把查询标为 COMPLETED。
+- Agent 不调用风险评估服务或扫描器，不新增提醒表、Migration 或 Worker。
 
 ## Task 5：已运行部分与未交付依赖
 
@@ -39,6 +39,6 @@
 
 完整验收在临时数据库 `penrose_agent_test_<随机 UUID>` 执行，初始化仓库 P0 schema/reference data，通过进程环境 DATABASE_URL 指向临时库，结束后删除。U06 migration/lifecycle 测试继续使用自己的 `penrose_p1_test_<UUID>` 临时库。SQLite 兼容测试仅验证应用逻辑，不代表 PostgreSQL 约束验证。
 
-非 Agent Task 6 周期 Worker 和 Task 7 查询尚未交付，所以“无人查询产生提醒 → 对话解释 → 再扫描去重 → 历史状态解释”的联合验收未完成。已有 U06 生命周期测试不能替代该链路。
+联合测试已覆盖“业务服务产生提醒 → Agent 只读查询 → 解除后按历史快照解释 → 无提醒不编造”，并在 Agent 查询期间禁止调用风险评估服务。周期 Worker 和 Alert 查询 API 由各自测试覆盖。
 
-2026-09-26 全量回归：317 passed、0 failed、0 skipped；临时 PostgreSQL 库在测试结束后已删除。自动化用受控模型替身覆盖完整事实排列、遗漏/非法输出、超时、解释写入失败和并发审核回退；没有调用真实 Bedrock，真实模型成功次数为 0。
+2026-09-27 全量回归：351 passed、0 failed、0 skipped；临时 PostgreSQL 库在测试结束后已删除。自动化用受控模型替身覆盖完整事实排列、遗漏/非法输出、超时、解释写入失败、并发审核回退和提醒历史解释；没有调用真实 Bedrock，真实模型成功次数为 0。

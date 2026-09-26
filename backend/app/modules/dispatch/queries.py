@@ -47,24 +47,34 @@ class DispatchQueries:
         from dataclasses import asdict
         from fastapi.encoders import jsonable_encoder
         from app.core.errors import NotFound
+        from app.modules.operations.alert_queries import AlertQueryService
         from app.modules.operations.queries import OperationsQueryService
         with self.sessions() as session:
+            alert_summary = AlertQueryService(session).active_summary(business_date)
             try:
                 data = jsonable_encoder(asdict(OperationsQueryService(session).dashboard(business_date)))
             except NotFound as error:
-                return self._envelope({"current_plan": None}, business_date=business_date,
-                    missing=[error.code, "ALERT_QUERY_UNAVAILABLE"], facts=[
+                return self._envelope({
+                    "current_plan": None,
+                    "active_alert_count": alert_summary.active_count,
+                    "alert_reason_counts": alert_summary.reason_counts,
+                    "alerts_as_of": iso(alert_summary.as_of),
+                }, business_date=business_date, missing=[error.code], facts=[
                         {"id": "current_plan", "text": "所选日期没有 Current Plan；无法提供当前运营摘要。"},
-                        {"id": "alerts", "text": "提醒数据不可用：U06 正式只读查询服务尚未接入。"},
+                        {"id": "alerts", "text": f"持久化活动提醒 {alert_summary.active_count} 条；活动提醒与运营快照 AT_RISK 是不同统计口径。"},
                     ])
         plan = data["current_plan"]
         data["unfinished_order_count"] = data["orders"]["total"] - data["orders"]["completed"]
-        data.update(active_alert_count=None, alert_reason_counts=None, alerts_as_of=None)
-        return self._envelope(data, business_date=business_date, missing=["ALERT_QUERY_UNAVAILABLE"], facts=[
+        data.update(
+            active_alert_count=alert_summary.active_count,
+            alert_reason_counts=alert_summary.reason_counts,
+            alerts_as_of=iso(alert_summary.as_of),
+        )
+        return self._envelope(data, business_date=business_date, facts=[
             {"id": "current_plan", "text": f"业务日期 {business_date}，Current Plan {plan['delivery_plan_id']}，版本 {plan['version_no']}。", "plan_id": plan["delivery_plan_id"]},
             {"id": "operations", "text": f"运营计算时点 {data['calculated_at']}：未完成订单 {data['unfinished_order_count']}，运营快照 AT_RISK {data['orders']['at_risk']}。", "plan_id": plan["delivery_plan_id"]},
             {"id": "reviews", "text": f"未解决 Incident {data['open_incidents']}，待审核 Candidate {data['pending_recovery_reviews']}；候选尚未生效。", "plan_id": plan["delivery_plan_id"]},
-            {"id": "alerts", "text": "持久化活动提醒数及原因计数不可用：U06 正式只读查询服务尚未接入；运营风险数不代表活动提醒数。"},
+            {"id": "alerts", "text": f"持久化活动提醒 {alert_summary.active_count} 条，原因分布 {alert_summary.reason_counts}；运营快照 AT_RISK 与活动提醒数是不同统计口径。"},
         ])
 
     def proposal(self, recovery_id: UUID):
@@ -93,15 +103,50 @@ class DispatchQueries:
         } for fact in facts])
 
     def explain_alert(self, business_date, order_id=None, alert_id=None):
-        # Task 7's canonical read service has not shipped. Never infer an Alert
-        # from Order.risk_status, and never invoke evaluation from a query.
-        return self._envelope({"order_id": str(order_id) if order_id else None,
-            "alert_id": str(alert_id) if alert_id else None, "alerts": None},
-            business_date=business_date, missing=["ALERT_QUERY_UNAVAILABLE"], facts=[{
-                "id": "alert_unavailable", "order_id": str(order_id) if order_id else None,
-                "alert_id": str(alert_id) if alert_id else None,
-                "text": "提醒数据不可用：U06 正式只读查询服务尚未接入，不能确认该对象存在活动或历史提醒。",
-            }])
+        from dataclasses import asdict
+        from fastapi.encoders import jsonable_encoder
+        from app.integrations.agent.contracts import RecoveryError
+        from app.modules.operations.alert_queries import AlertQueryService
+
+        with self.sessions() as session:
+            service = AlertQueryService(session)
+            if alert_id:
+                alert = service.get_alert(alert_id)
+                alerts = [alert] if alert and alert.business_date == business_date else []
+            else:
+                alerts = service.list_alerts_for_order(business_date, order_id)
+            if order_id:
+                alerts = [alert for alert in alerts if alert.order_id == order_id]
+            if not alerts:
+                raise RecoveryError(
+                    "ALERT_NOT_FOUND",
+                    f"未找到业务日期 {business_date} 下匹配的活动或历史提醒。",
+                    404,
+                )
+
+            items, facts = [], []
+            for alert in alerts:
+                changes = service.list_changes_for_alert(alert.id)
+                item = jsonable_encoder(asdict(alert))
+                item["changes"] = jsonable_encoder([asdict(change) for change in changes])
+                items.append(item)
+                facts.append({
+                    "id": f"alert:{alert.id}:status",
+                    "order_id": str(alert.order_id), "alert_id": str(alert.id),
+                    "text": f"提醒 {alert.id} 当前状态 {alert.status}，检测于 {alert.detected_at.isoformat()}，最近评估于 {alert.last_evaluated_at.isoformat()}。",
+                })
+                for change in changes:
+                    facts.append({
+                        "id": f"alert:{alert.id}:change:{change.change_id}",
+                        "order_id": str(alert.order_id), "alert_id": str(alert.id),
+                        "text": f"提醒变更 {change.change_type}（{change.recorded_at.isoformat()}）：持久化证据快照 {change.evidence_snapshot}。",
+                    })
+
+        return self._envelope({
+            "order_id": str(order_id) if order_id else None,
+            "alert_id": str(alert_id) if alert_id else None,
+            "alerts": items,
+        }, business_date=business_date, facts=facts)
 
     def _envelope(self, data, *, business_date=None, missing=(), facts=()):
         return {**data, "business_date": str(business_date) if business_date else data.get("business_date"),

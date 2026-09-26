@@ -8,13 +8,15 @@ from app.modules.dispatch.session import ContextCodec
 from app.modules.dispatch.queries import DispatchQueries
 
 
-def test_unavailable_alert_service_does_not_open_database():
-    def forbidden():
-        pytest.fail("Missing U06 contract must not be replaced by ORM queries")
-    queries = DispatchQueries(forbidden)
-    alert = queries.explain_alert(date(2026, 9, 25), order_id=uuid4())
-    assert alert["alerts"] is None and alert["missing_reasons"] == ["ALERT_QUERY_UNAVAILABLE"]
-    assert alert["as_of"] and not alert["truncated"]
+def test_missing_persisted_alert_is_explicit(database):
+    from app.integrations.agent.contracts import RecoveryError
+
+    sessions, _, day, _ = database
+    queries = DispatchQueries(sessions)
+    with pytest.raises(RecoveryError) as exc:
+        queries.explain_alert(day, order_id=uuid4())
+    assert exc.value.code == "ALERT_NOT_FOUND"
+    assert "未找到" in str(exc.value)
 
 
 @pytest.mark.parametrize("mode, source", [("complete", "model"), ("omit", "fallback"), ("unknown", "fallback"), ("timeout", "fallback")])
@@ -36,14 +38,18 @@ def test_summary_model_exact_permutation_and_reference_preservation(mode, source
 
 def test_date_change_clears_order_and_alert_choices_and_continuation_works():
     codec = ContextCodec("s"*32)
-    service = DispatchService(DispatchQueries(None), codec=codec)
+    queries = SimpleNamespace(explain_alert=lambda *_: {
+        "alerts": [{"id": "persisted"}],
+        "facts": [{"id": "alert", "text": "已读取持久化提醒"}],
+    })
+    service = DispatchService(queries, codec=codec)
     context = DispatchContext(business_date=date(2026, 9, 24), order_id=uuid4(), alert_id=uuid4())
     first = service.run(DispatchCommand(message="2026-09-25 为什么有风险", context_token=codec.encode(context, "user")), "user")
     assert first.status == "NEEDS_INPUT"
     assert first.context.order_id is None and first.context.alert_id is None
     alert_id = uuid4()
     second = service.run(DispatchCommand(message=f"提醒: {alert_id}", context_token=first.context_token), "user")
-    assert second.status == "COMPLETED" and "提醒数据不可用" in second.message
+    assert second.status == "COMPLETED" and "已读取持久化提醒" in second.message
     assert second.context.alert_id == alert_id
 
 
