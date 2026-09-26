@@ -27,6 +27,20 @@ class RiskService:
             else OrderRiskStatus.NORMAL
         )
 
+    def reason_for_eta(
+        self, estimated_arrival_at: datetime, delivery_window_end_at: datetime
+    ) -> str:
+        if self.status_for_eta(
+            estimated_arrival_at=estimated_arrival_at,
+            delivery_window_end_at=delivery_window_end_at,
+        ) is OrderRiskStatus.NORMAL:
+            return "NORMAL"
+        return (
+            "PREDICTED_MISS"
+            if estimated_arrival_at >= delivery_window_end_at
+            else "APPROACHING_WINDOW"
+        )
+
     @staticmethod
     def route_delay_seconds(
         *, stops: list[RouteStop], current_time: datetime

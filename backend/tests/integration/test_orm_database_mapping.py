@@ -36,7 +36,9 @@ def test_all_relationship_mappers_configure_without_warnings() -> None:
 def test_metadata_matches_existing_database_tables_columns_and_foreign_keys() -> None:
     inspector = inspect(engine)
 
-    assert set(Base.metadata.tables) == EXPECTED_TABLES
+    # The application also maps additive P1 tables, but this seed database
+    # intentionally remains at its original 14-table P0 schema.
+    assert EXPECTED_TABLES <= set(Base.metadata.tables)
     assert set(inspector.get_table_names(schema="public")) == EXPECTED_TABLES
 
     for table_name in EXPECTED_TABLES:

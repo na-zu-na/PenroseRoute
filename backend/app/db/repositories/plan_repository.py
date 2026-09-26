@@ -221,6 +221,20 @@ class PlanRepository:
         )
         return self.session.scalar(statement)
 
+    def lock_current_plan_for_alerts(self, business_date: date) -> DeliveryPlan | None:
+        """Recheck after locking: approval may replace Current while we wait."""
+        selected = self.get_current_plan(business_date)
+        if selected is not None:
+            locked = self.lock_plan_by_id(selected.id)
+            if locked is not None and locked.status is DeliveryPlanStatus.CURRENT:
+                return locked
+        return self.session.scalar(
+            select(DeliveryPlan).where(
+                DeliveryPlan.business_date == business_date,
+                DeliveryPlan.status == DeliveryPlanStatus.CURRENT,
+            ).with_for_update().execution_options(populate_existing=True)
+        )
+
     def list_route_stops_with_orders(self, route_id: UUID) -> list[RouteStop]:
         statement = (
             select(RouteStop)

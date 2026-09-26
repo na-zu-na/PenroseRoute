@@ -1,8 +1,9 @@
-"""P0 SQLAlchemy ORM models.
+"""P0 and P1 SQLAlchemy ORM models.
 
-Importing this package registers all 14 existing database tables on ``Base``.
+Importing this package registers all mapped database tables on ``Base``.
 """
 
+from app.db.models.alerts import RiskAlert, RiskAlertChange
 from app.db.models.fleet import Driver, Vehicle, VehicleDriverAssignment
 from app.db.models.planning import DeliveryPlan, DeliveryPlanOrder, RouteStop, VehicleRoute
 from app.db.models.recovery import Incident, IncidentAffectedOrder, RecoveryPlan
@@ -19,6 +20,8 @@ __all__ = [
     "Merchant",
     "Order",
     "RecoveryPlan",
+    "RiskAlert",
+    "RiskAlertChange",
     "RouteStop",
     "Vehicle",
     "VehicleDriverAssignment",

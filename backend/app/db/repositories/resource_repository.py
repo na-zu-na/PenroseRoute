@@ -71,6 +71,14 @@ class ResourceRepository:
             )
         )
 
+    def lock_orders_by_ids(self, order_ids: list[UUID]) -> list[Order]:
+        if not order_ids:
+            return []
+        return list(self.session.scalars(
+            select(Order).where(Order.id.in_(order_ids)).order_by(Order.id)
+            .with_for_update().execution_options(populate_existing=True)
+        ))
+
     def get_current_order_membership(self, order_id: UUID) -> tuple[DeliveryPlanOrder, DeliveryPlan] | None:
         return self.session.execute(
             select(DeliveryPlanOrder, DeliveryPlan)
