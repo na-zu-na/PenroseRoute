@@ -24,6 +24,8 @@ EXPECTED_TABLES = {
     "vehicle_driver_assignments",
     "vehicle_routes",
     "vehicles",
+    "risk_alerts",
+    "risk_alert_changes",
 }
 
 
@@ -36,10 +38,9 @@ def test_all_relationship_mappers_configure_without_warnings() -> None:
 def test_metadata_matches_existing_database_tables_columns_and_foreign_keys() -> None:
     inspector = inspect(engine)
 
-    # The application also maps additive P1 tables, but this seed database
-    # intentionally remains at its original 14-table P0 schema.
-    assert EXPECTED_TABLES <= set(Base.metadata.tables)
-    assert set(inspector.get_table_names(schema="public")) == EXPECTED_TABLES
+    # The migration ledger is database infrastructure, not an ORM model.
+    assert set(Base.metadata.tables) == EXPECTED_TABLES
+    assert set(inspector.get_table_names(schema="public")) == EXPECTED_TABLES | {"schema_migrations"}
 
     for table_name in EXPECTED_TABLES:
         mapped_table = Base.metadata.tables[table_name]

@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from app.api.routes.dispatch import router as dispatch_router
 
+from app.api.routes.alerts import router as alerts_router
 from app.api.routes.assignments import router as assignments_router
 from app.api.routes.decisions import router as decisions_router
 from app.api.routes.recovery import router as recovery_router
@@ -33,6 +34,7 @@ api_router.include_router(customers_router)
 api_router.include_router(vehicles_router)
 api_router.include_router(drivers_router)
 api_router.include_router(operations_router)
+api_router.include_router(alerts_router)
 api_router.include_router(planning_router)
 api_router.include_router(delivery_plans_router)
 api_router.include_router(vehicle_routes_router)

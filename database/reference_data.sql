@@ -1,7 +1,7 @@
 -- ============================================================
 -- PenroseRoute - Reference / Demo Data
 -- Target database: penrose_route
--- Prerequisite: run 01_penrose_route_schema.sql first
+-- Prerequisite: run create_datatable.sql first on a fresh database
 --
 -- Demo scenario:
 --   - 8 locations
@@ -16,6 +16,7 @@
 --   - route stops including a HANDOVER stop
 --   - incident affected orders
 --   - 2 recovery plans
+--   - 1 active P1 risk alert + 1 change event
 --
 -- Intended for a fresh/demo database.
 -- ============================================================
@@ -937,6 +938,32 @@ INSERT INTO recovery_plans (
     NULL
 );
 
+-- 15. P1 RISK ALERTS
+-- At 10:05, route 2 is 3,000 seconds behind its first pickup. ORD-003's
+-- projected delivery at 11:15 reaches its 11:30 window's 900-second threshold.
+INSERT INTO risk_alerts (
+    id, delivery_plan_id, order_id, business_date, risk_type, status,
+    evidence, detected_at, last_evaluated_at
+) VALUES (
+    'f0000000-0000-0000-0000-000000000001',
+    '80000000-0000-0000-0000-000000000001',
+    '40000000-0000-0000-0000-000000000003',
+    '2026-09-25', 'DELIVERY_WINDOW', 'ACTIVE',
+    '{"reason_category":"APPROACHING_WINDOW","estimated_arrival_at":"2026-09-25T11:15:00+08:00","delivery_window_end_at":"2026-09-25T11:30:00+08:00","delay_seconds":3000,"threshold_seconds":900,"vehicle_route_id":"90000000-0000-0000-0000-000000000002"}'::jsonb,
+    '2026-09-25 10:05:00+08', '2026-09-25 10:05:00+08'
+);
+
+-- Use the same cursor allocation protocol as live alert writers.
+SELECT pg_advisory_xact_lock(55120, 1);
+INSERT INTO risk_alert_changes (
+    change_id, alert_id, change_type, recorded_at, evidence_snapshot
+) VALUES (
+    nextval('public.risk_alert_change_cursor_seq'),
+    'f0000000-0000-0000-0000-000000000001',
+    'CREATED', '2026-09-25 10:05:00+08',
+    '{"reason_category":"APPROACHING_WINDOW","estimated_arrival_at":"2026-09-25T11:15:00+08:00","delivery_window_end_at":"2026-09-25T11:30:00+08:00","delay_seconds":3000,"threshold_seconds":900,"vehicle_route_id":"90000000-0000-0000-0000-000000000002"}'::jsonb
+);
+
 COMMIT;
 
 -- ============================================================
@@ -970,4 +997,8 @@ UNION ALL
 SELECT 'incident_affected_orders', COUNT(*) FROM incident_affected_orders
 UNION ALL
 SELECT 'recovery_plans', COUNT(*) FROM recovery_plans
+UNION ALL
+SELECT 'risk_alerts', COUNT(*) FROM risk_alerts
+UNION ALL
+SELECT 'risk_alert_changes', COUNT(*) FROM risk_alert_changes
 ORDER BY table_name;

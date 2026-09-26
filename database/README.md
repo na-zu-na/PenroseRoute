@@ -3,9 +3,10 @@
 Database initialization is split into three explicit SQL files:
 
 - `create_database.sql` creates the `penrose_route` database.
-- `create_datatable.sql` creates all 14 P0 tables, extensions, constraints,
-  indexes, functions, and triggers.
-- `reference_data.sql` optionally loads the reference/demo data.
+- `create_datatable.sql` creates the 14 P0 tables, the two P1 alert tables,
+  the migration ledger, and their supporting database objects.
+- `reference_data.sql` optionally loads the reference/demo data, including
+  one active alert and its creation event.
 
 The application never runs these scripts automatically.
 
@@ -33,5 +34,8 @@ optional.
 
 The scripts are intended for initial creation of an empty database. They do
 not drop or overwrite existing tables and are not schema-upgrade tools.
+The bootstrap records V001 as applied. Upgrade an existing P0 database with
+`migrations/V001__p1_risk_alerts.sql` via `apply_migrations.py` instead of
+rerunning the bootstrap; do not apply V001 again after a fresh bootstrap.
 The repository contains no database password; credentials must be supplied by
 the operator through `DATABASE_URL` or the environment.

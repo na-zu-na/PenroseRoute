@@ -2,6 +2,7 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.pytest_tmp*/
 .coverage
 *.py[cod]
 *.egg-info/

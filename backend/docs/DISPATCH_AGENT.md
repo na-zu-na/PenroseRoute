@@ -1,8 +1,11 @@
 # 跨模块调度 Agent 使用说明
 
-## 当前可以运行的流程
+> 此文档描述未挂载的调度 Agent 原型。当前正式 FastAPI 路由不包含
+> `POST /api/agent/dispatch`；异常恢复请使用 `POST /api/incidents/{incident_id}/recovery`。
 
-本次在现有 P0 恢复 Agent 上增加了调度入口，并补齐正常规划、异常上报、恢复入库和人工决策的后端实现。没有新增数据库表，继续使用现有 14 张表。
+## 原型内部流程
+
+此原型在现有恢复能力之上实现了调度入口代码，但尚未接入正式路由。它本身没有新增数据库表；当前项目另有 P1 风险提醒表。
 
 ```text
 自然语言请求 + 可选上下文
@@ -49,7 +52,7 @@ DISPATCH_API_TOKENS='{"替换成至少32字符的独立随机令牌":{"subject":
 - 不配置凭据时返回 503，不会默认开放接口。
 - Bedrock 可选：设置 `DISPATCH_INTENT_PROVIDER=bedrock`、`BEDROCK_MODEL_ID`、`AWS_REGION`。恢复事实解释另由 `AGENT_EXPLANATION_PROVIDER` 控制。模型必须支持 Converse tool use；AWS 凭据使用标准凭据链。
 
-## 调度入口
+## 调度入口（仅单独挂载原型路由后）
 
 `POST /api/agent/dispatch`
 
