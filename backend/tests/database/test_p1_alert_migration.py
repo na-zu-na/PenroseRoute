@@ -50,6 +50,31 @@ def test_upgrade_preserves_p0_data_and_second_run_is_noop(p1_database_url):
         assert len(names) == 17
 
 
+def test_fresh_bootstrap_seeds_alert_and_records_v001(p1_bootstrap_database_url):
+    with _connect(p1_bootstrap_database_url) as connection:
+        alert = connection.execute(
+            "SELECT delivery_plan_id, order_id, business_date, risk_type, status, evidence "
+            "FROM risk_alerts"
+        ).fetchone()
+        change = connection.execute(
+            "SELECT change_id, alert_id, change_type, evidence_snapshot FROM risk_alert_changes"
+        ).fetchone()
+        assert alert is not None and change is not None
+        assert str(alert[0]) == "80000000-0000-0000-0000-000000000001"
+        assert str(alert[1]) == "40000000-0000-0000-0000-000000000003"
+        assert str(alert[2]) == "2026-09-25"
+        assert (alert[3], alert[4]) == ("DELIVERY_WINDOW", "ACTIVE")
+        assert alert[5]["reason_category"] == "APPROACHING_WINDOW"
+        assert alert[5]["delay_seconds"] == 3000
+        assert change[0] == 1
+        assert change[2] == "CREATED"
+        assert change[3] == alert[5]
+        assert connection.execute(
+            "SELECT last_value FROM risk_alert_change_cursor_seq"
+        ).fetchone()[0] == 1
+    assert _runner().apply_migrations(p1_bootstrap_database_url) == []
+
+
 def test_alert_constraints_and_commit_safe_cursor_definition(p1_database_url):
     _runner().apply_migrations(p1_database_url)
     with _connect(p1_database_url) as connection:

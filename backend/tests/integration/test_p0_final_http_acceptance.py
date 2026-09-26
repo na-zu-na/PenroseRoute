@@ -83,6 +83,8 @@ def test_p0_openapi_has_all_59_formal_endpoints_and_no_temporary_recovery():
     non_p0 = {
         ("GET", "/api/operations/simulated-positions"),
         ("GET", "/api/recovery-plans/{}/comparison"),
+        ("GET", "/api/operations/alerts"),
+        ("GET", "/api/operations/alerts/changes"),
     }
     formal_actual = actual - non_p0
     assert expected == formal_actual, f"missing={sorted(expected - formal_actual)}; extra={sorted(formal_actual - expected)}"

@@ -8,6 +8,8 @@
 -- 2. Requires permission to CREATE EXTENSION for pgcrypto and btree_gist.
 -- 3. Intended for a fresh schema/database. Existing objects with the same
 --    names may cause "already exists" errors.
+-- 4. Includes the P1 alert baseline. Existing P0 databases use the separate
+--    V001 migration instead; do not rerun this bootstrap against them.
 -- ============================================================
 
 --
@@ -2180,6 +2182,61 @@ ALTER TABLE ONLY public.vehicle_routes
 ALTER TABLE ONLY public.vehicles
 
     ADD CONSTRAINT vehicles_current_location_id_fkey FOREIGN KEY (current_location_id) REFERENCES public.locations(id) ON DELETE RESTRICT;
+
+
+-- P1 ALERT BOOTSTRAP: equivalent to V001 for a fresh database only.
+CREATE TABLE public.risk_alerts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    delivery_plan_id uuid NOT NULL REFERENCES public.delivery_plans(id) ON DELETE RESTRICT,
+    order_id uuid NOT NULL REFERENCES public.orders(id) ON DELETE RESTRICT,
+    business_date date NOT NULL,
+    risk_type varchar(32) NOT NULL,
+    status varchar(16) NOT NULL,
+    evidence jsonb NOT NULL,
+    detected_at timestamptz NOT NULL,
+    last_evaluated_at timestamptz NOT NULL,
+    resolved_at timestamptz,
+    CONSTRAINT ck_risk_alerts_type CHECK (risk_type = 'DELIVERY_WINDOW'),
+    CONSTRAINT ck_risk_alerts_status CHECK (status IN ('ACTIVE', 'RESOLVED')),
+    CONSTRAINT ck_risk_alerts_times CHECK (
+        last_evaluated_at >= detected_at
+        AND (resolved_at IS NULL OR resolved_at >= detected_at)
+        AND ((status = 'ACTIVE' AND resolved_at IS NULL)
+             OR (status = 'RESOLVED' AND resolved_at IS NOT NULL))
+    )
+);
+
+CREATE UNIQUE INDEX uq_risk_alerts_active_plan_order_type
+    ON public.risk_alerts (delivery_plan_id, order_id, risk_type)
+    WHERE status = 'ACTIVE';
+
+CREATE INDEX ix_risk_alerts_business_date_status
+    ON public.risk_alerts (business_date, status, detected_at DESC);
+
+-- Writers take advisory transaction lock (55120, 1) before nextval.
+CREATE SEQUENCE public.risk_alert_change_cursor_seq AS bigint CACHE 1;
+
+CREATE TABLE public.risk_alert_changes (
+    change_id bigint PRIMARY KEY,
+    alert_id uuid NOT NULL REFERENCES public.risk_alerts(id) ON DELETE RESTRICT,
+    change_type varchar(16) NOT NULL,
+    recorded_at timestamptz NOT NULL,
+    evidence_snapshot jsonb NOT NULL,
+    CONSTRAINT ck_risk_alert_changes_type CHECK (change_type IN ('CREATED', 'UPDATED', 'RESOLVED'))
+);
+
+CREATE INDEX ix_risk_alert_changes_alert ON public.risk_alert_changes (alert_id, change_id);
+
+-- Fresh bootstrap already contains V001's objects; record its immutable
+-- checksum so later migrations do not attempt to create them again.
+CREATE TABLE public.schema_migrations (
+    version varchar(16) PRIMARY KEY,
+    checksum char(64) NOT NULL,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO public.schema_migrations (version, checksum)
+VALUES ('V001', 'e33eede8f2b5fe3f065ad9093ee8a0103557b1e26cf61baea73d0640df158c8f');
 
 
 --

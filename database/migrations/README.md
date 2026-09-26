@@ -3,6 +3,8 @@
 `V001__p1_risk_alerts.sql` adds only `risk_alerts`, `risk_alert_changes`, and
 their indexes/sequence. The runner creates `schema_migrations` for version and
 SHA-256 tracking. It does not rebuild or seed the 14 P0 tables.
+Fresh databases initialized with `create_datatable.sql` already include these
+objects and a V001 ledger entry; use this migration only for existing P0 databases.
 
 ## Apply explicitly
 

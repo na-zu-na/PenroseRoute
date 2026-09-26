@@ -5,7 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select, text
 from sqlalchemy import inspect
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.models.alerts import AlertStatus, RiskAlert, RiskAlertChange
 
@@ -80,5 +80,6 @@ class AlertRepository:
     def list_changes(self, after: int, limit: int) -> list[RiskAlertChange]:
         return list(self.session.scalars(
             select(RiskAlertChange).where(RiskAlertChange.change_id > after)
+            .options(joinedload(RiskAlertChange.alert))
             .order_by(RiskAlertChange.change_id).limit(limit)
         ))

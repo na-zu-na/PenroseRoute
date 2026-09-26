@@ -28,7 +28,9 @@ def test_schema_script_creates_the_complete_p0_schema() -> None:
         re.findall(r"CREATE TABLE (?:public\.)?([a-z_]+)", sql)
     )
 
-    assert created_tables == EXPECTED_TABLES
+    assert created_tables == EXPECTED_TABLES | {
+        "risk_alerts", "risk_alert_changes", "schema_migrations",
+    }
     assert "CREATE SCHEMA public;" not in sql
     assert "CREATE EXTENSION" in sql and "pgcrypto" in sql
     assert "CREATE EXTENSION" in sql and "btree_gist" in sql
