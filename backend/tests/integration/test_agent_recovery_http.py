@@ -125,15 +125,26 @@ def test_formal_recovery_runs_agent_graph_tools_real_solver_and_approval(monkeyp
                 for order_id in ids["orders"][1:]
             }
             assert str(ids["orders"][1]) in attempts[1].agent_explanation
-            evidence_after = attempts[1].solver_validation_summary["recovery_evidence"]["after"]
-            candidate = session.get(DeliveryPlan, candidate_id)
-            assert evidence_after == {
-                "assigned_order_count": candidate.assigned_order_count,
-                "unassigned_order_count": candidate.unassigned_order_count,
-                "vehicle_count": candidate.vehicle_count,
-                "total_distance_meters": candidate.total_distance_meters,
-                "total_duration_seconds": candidate.total_duration_seconds,
+            evidence = attempts[1].solver_validation_summary["recovery_evidence"]
+            assert evidence["source"] == "P1_PLAN_COMPARISON"
+            assert evidence["comparison_time_basis"] == "ATTEMPT_RECORDED_AT"
+            assert evidence["reviewable"] is True
+            assert evidence["remaining_metrics"] == {
+                "base_distance_meters": None,
+                "candidate_distance_meters": None,
+                "delta_distance_meters": None,
+                "base_duration_seconds": None,
+                "candidate_duration_seconds": None,
+                "delta_duration_seconds": None,
+                "reason": "NO_COMPARABLE_REMAINDER_SNAPSHOT",
             }
+            evidence_after = evidence["after"]
+            candidate = session.get(DeliveryPlan, candidate_id)
+            assert evidence_after["assigned_order_count"] == candidate.assigned_order_count
+            assert evidence_after["unassigned_order_count"] == candidate.unassigned_order_count
+            assert evidence_after["vehicle_count"] is None
+            assert evidence_after["total_distance_meters"] is None
+            assert evidence_after["total_duration_seconds"] is None
             candidate_stops = list(session.scalars(select(RouteStop).join(VehicleRoute).where(VehicleRoute.delivery_plan_id == candidate_id)))
             handover = next(stop for stop in candidate_stops if stop.stop_type is StopType.HANDOVER)
             delivery = next(stop for stop in candidate_stops if stop.order_id == ids["orders"][1] and stop.stop_type is StopType.DELIVERY)
@@ -189,7 +200,10 @@ def test_agent_merchant_delay_model_failure_falls_back_and_modify_uses_same_grap
             assert session.get(DeliveryPlan, base_id).status is DeliveryPlanStatus.CURRENT
             candidate = session.get(DeliveryPlan, first_candidate)
             assert candidate.status is DeliveryPlanStatus.CANDIDATE
-            assert recovery.solver_validation_summary["recovery_evidence"]["after"]["total_distance_meters"] == candidate.total_distance_meters
+            evidence = recovery.solver_validation_summary["recovery_evidence"]
+            assert evidence["source"] == "P1_PLAN_COMPARISON"
+            assert evidence["remaining_metrics"]["reason"] == "NO_COMPARABLE_REMAINDER_SNAPSHOT"
+            assert evidence["after"]["total_distance_meters"] is None
         modified = _post_ok(client, f"/api/recovery-plans/{first['reviewable_recovery_plan_id']}/modify", {
             "decision_reason": "Retry wider scope",
         }, code="RECOVERY_MODIFICATION_PROCESSED")
@@ -205,7 +219,9 @@ def test_agent_merchant_delay_model_failure_falls_back_and_modify_uses_same_grap
             assert next_attempt.previous_recovery_plan_id == first_attempt.id
             assert next_attempt.solver_validation_summary["explanation_source"] == "template_fallback"
             assert next_attempt.solver_validation_summary["tool_trace"] == ["get_recovery_context", "solve_replanning", "get_solver_result"]
-            assert next_attempt.solver_validation_summary["recovery_evidence"]["after"]["vehicle_count"] == session.get(DeliveryPlan, next_attempt.candidate_delivery_plan_id).vehicle_count
+            evidence = next_attempt.solver_validation_summary["recovery_evidence"]
+            assert evidence["source"] == "P1_PLAN_COMPARISON"
+            assert evidence["after"]["vehicle_count"] is None
             assert session.get(DeliveryPlan, base_id).status is DeliveryPlanStatus.CURRENT
 
 

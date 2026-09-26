@@ -79,7 +79,6 @@ def execute_agent_attempt(context, attempt_id, attempt_no, previous_id, fallback
         ValidationReport, VerifiedSummary,
     )
     from app.modules.recovery.deterministic_orchestration import execute_recovery
-    from app.modules.recovery.evidence import project_formal_evidence
 
     agent_context = AgentContext(
         recovery_plan_id=attempt_id,
@@ -143,7 +142,10 @@ def execute_agent_attempt(context, attempt_id, attempt_no, previous_id, fallback
                     total_duration_seconds=result.total_duration_seconds,
                 ),
                 diagnostic_codes=tuple(issue.code for issue in issues),
-                recovery_evidence=None if issues else project_formal_evidence(context, self.outcome),
+                # The canonical comparison can only be built after the candidate
+                # plan has been persisted.  The formal workflow attaches it from
+                # U01 inside the same transaction as candidate creation.
+                recovery_evidence=None,
             )
             self.observation = Observation(solver=solver, validation=validation)
             return self.observation
