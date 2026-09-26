@@ -1,7 +1,7 @@
 """Transactional route-stop execution state machine."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -20,12 +20,14 @@ from app.db.models.resources import OrderExecutionStatus, OrderRiskStatus
 from app.db.repositories.fleet_repository import FleetRepository
 from app.db.repositories.plan_repository import PlanRepository
 from app.db.repositories.resource_repository import ResourceRepository
+from app.modules.operations.alert_refresh import refresh_alerts_for_business_date
 from app.modules.operations.risk import RiskService
 
 
 @dataclass(frozen=True)
 class StopExecutionResult:
     stop: RouteStop
+    business_date: date
     order_execution_status: str
     order_risk_status: str
     route_status: str
@@ -46,32 +48,38 @@ class StopExecutionService:
     def arrive(
         self, stop_id: UUID, occurred_at: datetime | None = None
     ) -> StopExecutionResult:
-        return self._transition(
+        result = self._transition(
             stop_id=stop_id,
             expected=StopStatus.PLANNED,
             target=StopStatus.ARRIVED,
             occurred_at=occurred_at,
         )
+        refresh_alerts_for_business_date(self.session, result.business_date, occurred_at or datetime.now(timezone.utc))
+        return result
 
     def start_service(
         self, stop_id: UUID, occurred_at: datetime | None = None
     ) -> StopExecutionResult:
-        return self._transition(
+        result = self._transition(
             stop_id=stop_id,
             expected=StopStatus.ARRIVED,
             target=StopStatus.IN_SERVICE,
             occurred_at=occurred_at,
         )
+        refresh_alerts_for_business_date(self.session, result.business_date, occurred_at or datetime.now(timezone.utc))
+        return result
 
     def complete(
         self, stop_id: UUID, occurred_at: datetime | None = None
     ) -> StopExecutionResult:
-        return self._transition(
+        result = self._transition(
             stop_id=stop_id,
             expected=StopStatus.IN_SERVICE,
             target=StopStatus.COMPLETED,
             occurred_at=occurred_at,
         )
+        refresh_alerts_for_business_date(self.session, result.business_date, occurred_at or datetime.now(timezone.utc))
+        return result
 
     def _transition(
         self,
@@ -121,7 +129,7 @@ class StopExecutionService:
             stops = self.plans.list_route_stops_with_orders(route.id)
 
             if stop.status is target:
-                return self._result(stop, order, route, vehicle, driver)
+                return self._result(stop, order, route, vehicle, driver, plan.business_date)
             if stop.status is not expected:
                 raise Conflict(
                     code="INVALID_STOP_STATE_TRANSITION",
@@ -161,7 +169,7 @@ class StopExecutionService:
                 assignment.ended_at = event_time
 
             self.plans.flush()
-            return self._result(stop, order, route, vehicle, driver)
+            return self._result(stop, order, route, vehicle, driver, plan.business_date)
 
     @staticmethod
     def _validate_sequence(stop: RouteStop, stops: list[RouteStop]) -> None:
@@ -277,9 +285,10 @@ class StopExecutionService:
             order.risk_status = OrderRiskStatus.NORMAL
 
     @staticmethod
-    def _result(stop, order, route, vehicle, driver) -> StopExecutionResult:
+    def _result(stop, order, route, vehicle, driver, business_date) -> StopExecutionResult:
         return StopExecutionResult(
             stop=stop,
+            business_date=business_date,
             order_execution_status=order.execution_status,
             order_risk_status=order.risk_status,
             route_status=route.status,

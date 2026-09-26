@@ -102,6 +102,7 @@ class DeterministicDecisionService:
         from app.core.errors import BusinessError
         from app.db.models.planning import DeliveryPlanStatus
         from app.db.models.recovery import DispatcherDecision, IncidentStatus, RecoveryPlanStatus
+        from app.modules.operations.alert_refresh import refresh_alerts_for_business_date
 
         if decision not in ("APPROVE", "REJECT") or not reason.strip():
             raise BusinessError(code="DECISION_INVALID", message="A decision reason is required")
@@ -124,7 +125,8 @@ class DeterministicDecisionService:
             recovery.decision_reason = reason.strip()
             recovery.reviewed_by = subject
             recovery.reviewed_at = now
-            return {
+            business_date = base.business_date
+            result = {
                 "recovery_plan_id": str(recovery.id),
                 "dispatcher_decision": decision,
                 "reviewed_by": subject,
@@ -137,6 +139,10 @@ class DeterministicDecisionService:
                 "current_delivery_plan_id": str(candidate.id if decision == "APPROVE" else base.id),
                 "incident_status": incident.status.value,
             }
+        if decision == "APPROVE":
+            with self.sessions() as refresh_source:
+                refresh_alerts_for_business_date(refresh_source, business_date, now)
+        return result
 
     def modify(self, recovery_id, reason, subject, *, request_id="-"):
         from uuid import uuid4

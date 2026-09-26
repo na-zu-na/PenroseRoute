@@ -28,6 +28,7 @@ from app.modules.incidents.scope import (
     initial_vehicle_unavailable_scope,
 )
 from app.modules.operations.risk import RiskService
+from app.modules.operations.alert_refresh import refresh_alerts_for_business_date
 from app.modules.resources.locations import resolve_location
 
 
@@ -168,7 +169,7 @@ class VehicleIncidentWorkflow:
             self.incidents.flush()
 
             scope = initial_vehicle_unavailable_scope()
-            return VehicleUnavailableResult(
+            result = VehicleUnavailableResult(
                 incident_id=incident.id,
                 incident_code=incident.incident_code,
                 incident_type=incident.incident_type,
@@ -185,6 +186,8 @@ class VehicleIncidentWorkflow:
                 recovery_required=True,
                 vehicle=context.vehicle,
             )
+        refresh_alerts_for_business_date(self.session, business_date, event_time)
+        return result
 
     def _resolve_breakdown_location(
         self,
@@ -244,6 +247,27 @@ class MerchantDelayWorkflow:
         )
 
     def assess_delay(
+        self,
+        *,
+        business_date: date,
+        merchant_id: UUID,
+        updated_ready_at: datetime,
+        detected_at: datetime | None = None,
+        explicit_incident: bool,
+    ) -> MerchantDelayResult:
+        result = self._assess_delay(
+            business_date=business_date,
+            merchant_id=merchant_id,
+            updated_ready_at=updated_ready_at,
+            detected_at=detected_at,
+            explicit_incident=explicit_incident,
+        )
+        refresh_alerts_for_business_date(
+            self.session, business_date, detected_at or datetime.now(timezone.utc)
+        )
+        return result
+
+    def _assess_delay(
         self,
         *,
         business_date: date,
