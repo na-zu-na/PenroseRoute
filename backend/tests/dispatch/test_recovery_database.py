@@ -62,9 +62,9 @@ def test_real_recovery_persists_attempts_and_full_candidate(database):
         assert session.get(Incident, incident).status == "REVIEW"
     queries = DispatchQueries(sessions, clock=lambda: now)
     proposal = queries.proposal(UUID(reply.data["reviewable_recovery_plan_id"]))
-    assert proposal["requires_human_review"]
-    difference = queries.compare(base_id, UUID(reply.data["candidate_delivery_plan_id"]))
-    assert difference["changed_order_count"] == 1
+    assert proposal["status"] == "PENDING_REVIEW"
+    difference = queries.compare(UUID(reply.data["reviewable_recovery_plan_id"]))
+    assert difference["reassigned_order_count"] == 1
 
 
 def test_handover_preserves_completed_pickup(database):

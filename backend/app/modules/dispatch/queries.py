@@ -1,32 +1,17 @@
 """Read-only projections. Sessions are closed before any Agent/model invocation."""
-from collections import Counter
 from datetime import date, datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
 
-from app.db.models import DeliveryPlan, Incident, Order, RecoveryPlan, VehicleRoute
+from app.db.models import VehicleRoute
 from app.db.repositories.fleet_repository import FleetRepository
 from app.db.repositories.plan_repository import PlanRepository
-from app.integrations.agent.contracts import RecoveryError
 
 
 def iso(value):
     return value.isoformat() if value else None
 
-
-def plan_projection(plan):
-    return {
-        "plan_id": str(plan.id), "plan_code": plan.plan_code, "business_date": iso(plan.business_date),
-        "version_no": plan.version_no, "status": str(plan.status),
-        "validation_status": str(plan.validation_status),
-        "matrix_source": (plan.validation_summary or {}).get("matrix_source", "UNSPECIFIED"),
-        "assigned_order_count": plan.assigned_order_count,
-        "unassigned_order_count": plan.unassigned_order_count,
-        "vehicle_count": plan.vehicle_count,
-        "total_distance_meters": plan.total_distance_meters,
-        "total_duration_seconds": plan.total_duration_seconds,
-    }
 
 
 class DispatchQueries:
@@ -52,83 +37,73 @@ class DispatchQueries:
                     "vehicle_status": str(v.status), "driver_status": str(d.status),
                     "location_id": str(v.current_location_id), "location_recorded_at": iso(v.current_location_recorded_at),
                     "idle": available, "on_current_plan": v.id in busy})
-            return {"business_date": iso(business_date), "observed_at": iso(at),
+            return {"business_date": iso(business_date), "as_of": iso(at), "observed_at": iso(at),
+                "missing_reasons": [], "facts": [{"id": "resources", "text": f"资源读取时点 {at.isoformat()}：有效车人绑定 {len(items)} 组，空闲 {sum(x['idle'] for x in items)} 组；依据当前状态，不代表未来班次或剩余载重。"}],
                 "availability_basis": "有效车人绑定及当前状态，不代表未来班次或剩余载重",
                 "total": len(items), "idle_count": sum(x["idle"] for x in items),
                 "items": items[:100], "truncated": len(items) > 100}
 
     def operations(self, business_date: date):
-        now = self.clock()
+        from dataclasses import asdict
+        from fastapi.encoders import jsonable_encoder
+        from app.core.errors import NotFound
+        from app.modules.operations.queries import OperationsQueryService
         with self.sessions() as session:
-            orders = list(session.scalars(select(Order).where(Order.business_date == business_date).order_by(Order.order_code)))
-            plan = PlanRepository(session).get_current_plan(business_date)
-            incidents = list(session.scalars(select(Incident).where(Incident.delivery_plan_id == plan.id,
-                Incident.status != "RESOLVED").order_by(Incident.detected_at))) if plan else []
-            risks = []
-            for order in orders:
-                if order.execution_status == "COMPLETED":
-                    continue
-                # Persisted risk and overdue deadline only; do not invent live traffic ETA.
-                deadline = order.delivery_window_end_at
-                if deadline.tzinfo is None:
-                    deadline = deadline.replace(tzinfo=timezone.utc)
-                if order.risk_status == "AT_RISK" or deadline < now:
-                    risks.append({"order_id": str(order.id), "order_code": order.order_code,
-                        "execution_status": str(order.execution_status), "deadline": iso(deadline),
-                        "reason": "DEADLINE_PASSED" if deadline < now else "RECORDED_AT_RISK"})
-            return {"business_date": iso(business_date), "observed_at": iso(now),
-                "risk_basis": "已记录风险与未完成订单的截止时间；不含实时交通预测",
-                "current_plan": plan_projection(plan) if plan else None,
-                "order_count": len(orders), "execution_counts": dict(Counter(str(o.execution_status) for o in orders)),
-                "at_risk_count": len(risks), "at_risk_orders": risks[:100],
-                "open_incident_count": len(incidents), "open_incidents": [
-                    {"incident_id": str(i.id), "incident_type": str(i.incident_type), "status": str(i.status),
-                     "vehicle_id": str(i.vehicle_id) if i.vehicle_id else None,
-                     "delay_seconds": i.delay_seconds} for i in incidents[:100]],
-                "truncated": len(risks) > 100 or len(incidents) > 100}
+            try:
+                data = jsonable_encoder(asdict(OperationsQueryService(session).dashboard(business_date)))
+            except NotFound as error:
+                return self._envelope({"current_plan": None}, business_date=business_date,
+                    missing=[error.code, "ALERT_QUERY_UNAVAILABLE"], facts=[
+                        {"id": "current_plan", "text": "所选日期没有 Current Plan；无法提供当前运营摘要。"},
+                        {"id": "alerts", "text": "提醒数据不可用：U06 正式只读查询服务尚未接入。"},
+                    ])
+        plan = data["current_plan"]
+        data["unfinished_order_count"] = data["orders"]["total"] - data["orders"]["completed"]
+        data.update(active_alert_count=None, alert_reason_counts=None, alerts_as_of=None)
+        return self._envelope(data, business_date=business_date, missing=["ALERT_QUERY_UNAVAILABLE"], facts=[
+            {"id": "current_plan", "text": f"业务日期 {business_date}，Current Plan {plan['delivery_plan_id']}，版本 {plan['version_no']}。", "plan_id": plan["delivery_plan_id"]},
+            {"id": "operations", "text": f"运营计算时点 {data['calculated_at']}：未完成订单 {data['unfinished_order_count']}，运营快照 AT_RISK {data['orders']['at_risk']}。", "plan_id": plan["delivery_plan_id"]},
+            {"id": "reviews", "text": f"未解决 Incident {data['open_incidents']}，待审核 Candidate {data['pending_recovery_reviews']}；候选尚未生效。", "plan_id": plan["delivery_plan_id"]},
+            {"id": "alerts", "text": "持久化活动提醒数及原因计数不可用：U06 正式只读查询服务尚未接入；运营风险数不代表活动提醒数。"},
+        ])
 
     def proposal(self, recovery_id: UUID):
+        from fastapi.encoders import jsonable_encoder
+        from app.modules.recovery.queries import RecoveryQueryService
         with self.sessions() as session:
-            recovery = session.get(RecoveryPlan, recovery_id)
-            if recovery is None:
-                raise RecoveryError("RECOVERY_NOT_FOUND", "恢复尝试不存在", 404)
-            base = session.get(DeliveryPlan, recovery.base_delivery_plan_id)
-            candidate = session.get(DeliveryPlan, recovery.candidate_delivery_plan_id) if recovery.candidate_delivery_plan_id else None
-            return {"recovery_plan_id": str(recovery.id), "incident_id": str(recovery.incident_id),
-                "status": str(recovery.status), "attempt_no": recovery.attempt_no,
-                "scope": str(recovery.replanning_scope), "solver_status": recovery.solver_status,
-                "validation_status": recovery.validation_status, "explanation": recovery.agent_explanation,
-                "structured_explanation": (recovery.solver_validation_summary or {}).get("explanation"),
-                "explanation_source": (recovery.solver_validation_summary or {}).get("explanation_source"),
-                "recovery_evidence": ((recovery.solver_validation_summary or {}).get("validation") or {}).get("recovery_evidence"),
-                "base_plan": plan_projection(base), "candidate_plan": plan_projection(candidate) if candidate else None,
-                "decision": recovery.dispatcher_decision,
-                "requires_human_review": recovery.status == "PENDING_REVIEW"}
+            data = jsonable_encoder(RecoveryQueryService(session).get_attempt(recovery_id))
+        return self._envelope(data, facts=[{
+            "id": "recovery", "recovery_plan_id": str(recovery_id),
+            "plan_id": data["candidate_delivery_plan_id"],
+            "text": f"Recovery {recovery_id}：状态 {data['status']}，范围 {data['replanning_scope']}，审批决定 {data['dispatcher_decision']}。历史解释仅对应生成时点，不能代表当前可审批状态。",
+        }])
 
-    def compare(self, base_id: UUID, candidate_id: UUID):
+    def compare(self, recovery_id: UUID):
+        from dataclasses import asdict
+        from fastapi.encoders import jsonable_encoder
+        from app.modules.planning.comparison import PlanComparisonService
+        from app.modules.recovery.evidence import evidence_from_plan_comparison, comparison_explanation_facts
         with self.sessions() as session:
-            repo = PlanRepository(session)
-            base, candidate = repo.get_plan_with_routes(base_id), repo.get_plan_with_routes(candidate_id)
-            if base is None or candidate is None:
-                raise RecoveryError("PLAN_NOT_FOUND", "比较计划不存在", 404)
-            if base.id == candidate.id or base.business_date != candidate.business_date or base.plan_group_id != candidate.plan_group_id:
-                raise RecoveryError("PLAN_COMPARISON_INVALID", "请选择同一计划组的不同版本", 422)
-            def assignments(plan):
-                vehicles = {r.id: str(r.vehicle_id) for r in plan.routes}
-                return {str(o.order_id): {"status": str(o.assignment_status),
-                    "vehicle_id": vehicles.get(o.vehicle_route_id)} for o in plan.plan_orders}
-            old, new = assignments(base), assignments(candidate)
-            changed = [{"order_id": key, "before": old.get(key), "after": new.get(key)}
-                       for key in sorted(old.keys() | new.keys()) if old.get(key) != new.get(key)]
-            def routes(plan):
-                return {str(r.vehicle_id): [(str(s.order_id), str(s.stop_type), iso(s.planned_arrival_at))
-                    for s in r.stops] for r in plan.routes}
-            a, b = routes(base), routes(candidate)
-            changed_vehicles = [key for key in sorted(a.keys() | b.keys()) if a.get(key) != b.get(key)]
-            metrics = ("assigned_order_count", "unassigned_order_count", "total_distance_meters", "total_duration_seconds")
-            return {"base_plan": plan_projection(base), "candidate_plan": plan_projection(candidate),
-                "delta": {key: getattr(candidate, key) - getattr(base, key)
-                          if getattr(base, key) is not None and getattr(candidate, key) is not None else None for key in metrics},
-                "changed_order_count": len(changed), "changed_orders": changed[:100],
-                "changed_vehicle_count": len(changed_vehicles), "changed_vehicle_ids": changed_vehicles[:100],
-                "truncated": len(changed) > 100 or len(changed_vehicles) > 100}
+            comparison = PlanComparisonService(session).compare_recovery(recovery_id)
+            data = jsonable_encoder(asdict(comparison))
+            facts = comparison_explanation_facts(evidence_from_plan_comparison(comparison), comparison)
+        return self._envelope(data, business_date=comparison.business_date, facts=[{
+            "id": fact.id, "text": fact.text, "recovery_plan_id": str(recovery_id),
+            "plan_id": str(comparison.candidate_plan_id), "comparison_at": data["comparison_at"],
+        } for fact in facts])
+
+    def explain_alert(self, business_date, order_id=None, alert_id=None):
+        # Task 7's canonical read service has not shipped. Never infer an Alert
+        # from Order.risk_status, and never invoke evaluation from a query.
+        return self._envelope({"order_id": str(order_id) if order_id else None,
+            "alert_id": str(alert_id) if alert_id else None, "alerts": None},
+            business_date=business_date, missing=["ALERT_QUERY_UNAVAILABLE"], facts=[{
+                "id": "alert_unavailable", "order_id": str(order_id) if order_id else None,
+                "alert_id": str(alert_id) if alert_id else None,
+                "text": "提醒数据不可用：U06 正式只读查询服务尚未接入，不能确认该对象存在活动或历史提醒。",
+            }])
+
+    def _envelope(self, data, *, business_date=None, missing=(), facts=()):
+        return {**data, "business_date": str(business_date) if business_date else data.get("business_date"),
+                "as_of": self.clock().isoformat(), "truncated": False,
+                "missing_reasons": list(missing), "facts": list(facts)}

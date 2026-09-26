@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from app.api.routes.dispatch import router as dispatch_router
 
 from app.api.routes.assignments import router as assignments_router
 from app.api.routes.decisions import router as decisions_router
@@ -20,6 +21,7 @@ from app.api.routes.vehicles import router as vehicles_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health_router)
+api_router.include_router(dispatch_router)
 api_router.include_router(orders_router)
 api_router.include_router(assignments_router)
 api_router.include_router(recovery_router)

@@ -203,7 +203,7 @@ class RecoveryWorkflow:
             result = outcome.solver_result
             logger.info(
                 "recovery_attempt request_id=%s incident_id=%s attempt_no=%s mode=%s solver_status=%s",
-                request_id, incident_id, attempt.attempt_no, explanation_source, result.status.value,
+                request_id, incident_id, attempt.attempt_no, self.mode, result.status.value,
             )
             if result.status is SolverStatus.INFEASIBLE:
                 with self.session.begin():
@@ -339,7 +339,10 @@ class RecoveryWorkflow:
                     canonical_text, canonical_structured = (
                         explanation_from_plan_comparison(canonical_evidence)
                     )
-                    explanation = f"{explanation}\n{canonical_text}"
+                    from app.modules.recovery.evidence import comparison_explanation_facts
+                    facts = comparison_explanation_facts(canonical_evidence, comparison)
+                    explanation = "\n".join(fact.text for fact in facts)
+                    explanation_source = "template"
                     structured_explanation = canonical_structured.model_dump(
                         mode="json"
                     )
@@ -365,6 +368,11 @@ class RecoveryWorkflow:
                 incident.status = IncidentStatus.REVIEW
                 self.session.flush()
                 created.append(self._view(locked))
+            if self.mode == "agent" and self.explanation_client is not None:
+                explanation = self._finalize_explanation(
+                    attempt.id, candidate.id, context, comparison,
+                    facts, explanation,
+                )
             return StartRecoveryResult(
                 incident_id=incident_id,
                 outcome="PENDING_REVIEW",
@@ -374,6 +382,55 @@ class RecoveryWorkflow:
                 agent_explanation=explanation,
                 manual_intervention_required=False,
             )
+
+    def _finalize_explanation(self, attempt_id, candidate_id, context, comparison, facts, template):
+        """Model runs after candidate commit; failures never roll back a candidate."""
+        from app.integrations.agent.explanation import arrange_facts, FORMAL_SOURCES
+
+        arranged, source, diagnostics = arrange_facts(facts, self.explanation_client)
+        rendered = "\n".join(fact.text for fact in arranged)
+        try:
+            with self.session.begin():
+                # Match human decision lock order: Attempt, Base, Candidate, Incident.
+                locked = self._lock_attempt(attempt_id)
+                if (locked.status is not RecoveryPlanStatus.PENDING_REVIEW
+                        or locked.candidate_delivery_plan_id != candidate_id):
+                    return locked.agent_explanation or template
+                self.plans.lock_plan_by_id(context.base_plan_id)
+                self.plans.lock_plan_by_id(candidate_id)
+                self._assert_base_still_current(context.incident_id, context.base_plan_id)
+                self.plans.lock_recovery_execution_facts(
+                    context.base_plan_id,
+                    extra_vehicle_ids=tuple(item.vehicle_id for item in context.vehicles),
+                    extra_driver_ids=tuple(item.driver_id for item in context.vehicles),
+                    extra_assignment_ids=tuple(item.assignment_id for item in context.vehicles),
+                )
+                self.plans.lock_recovery_execution_facts(candidate_id)
+                self.session.expire_all()
+                base = self.plans.get_plan_with_routes(context.base_plan_id)
+                candidate = self.plans.get_plan_with_routes(candidate_id)
+                if candidate is None or candidate.status is not DeliveryPlanStatus.CANDIDATE:
+                    return template
+                fresh_context = materialize_recovery_context(
+                    self.session, incident_id=context.incident_id,
+                    scope=context.scope, operational_time=context.current_time,
+                )
+                fresh = compare_plan_snapshots(
+                    recovery_plan_id=attempt_id, comparison_at=locked.created_at,
+                    base=base, candidate=candidate, reviewable=True,
+                )
+                if fresh_context != context or fresh != comparison:
+                    return locked.agent_explanation or template
+                summary = dict(locked.solver_validation_summary or {})
+                summary.update(explanation_source=FORMAL_SOURCES[source],
+                               explanation_diagnostic_codes=list(diagnostics))
+                locked.agent_explanation = rendered
+                locked.solver_validation_summary = summary
+                self.session.flush()
+            return rendered
+        except Exception:
+            logger.warning("Recovery explanation update failed; persisted template retained", exc_info=True)
+            return template
 
     def _new_attempt(
         self,

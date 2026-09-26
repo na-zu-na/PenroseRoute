@@ -25,9 +25,11 @@ class RecordingExplanationClient:
     def __init__(self, fail=False):
         self.calls = 0
         self.fail = fail
+        self.facts = []
 
     def arrange(self, facts):
         self.calls += 1
+        self.facts.append(facts)
         if self.fail:
             raise TimeoutError("model unavailable")
         return ExplanationOutline(fact_ids=tuple(fact.id for fact in facts))
@@ -108,6 +110,11 @@ def test_formal_recovery_runs_agent_graph_tools_real_solver_and_approval(monkeyp
         assert tool_calls == ["get_recovery_context", "solve_replanning", "get_solver_result"] * 2
         assert solver_calls == ["AFFECTED_ROUTE", "CROSS_ROUTE"]
         assert model.calls == 1
+        texts = "\n".join(f.text for f in model.facts[0])
+        assert "NO_COMPARABLE_REMAINDER_SNAPSHOT" in texts
+        assert "ETA" in texts and "Handover" in texts and "Completed Freeze" in texts
+        assert "候选未分配" in texts and "订单改派" in texts
+        assert "本次重新求解的路线" not in texts
         assert any(
             f"request_id=agent-e2e-breakdown incident_id={incident_id}" in record.message
             and "attempt_no=2 mode=agent" in record.message
@@ -296,4 +303,95 @@ def test_agent_graph_failure_fallback_never_repeats_solver(monkeypatch, failure_
         assert scopes == ["AFFECTED_ROUTE"]
         with sessions() as session:
             attempt = session.get(RecoveryPlan, data["reviewable_recovery_plan_id"])
-            assert attempt.solver_validation_summary["explanation_source"] == "template_fallback"
+            assert attempt.solver_validation_summary["explanation_source"] == "template"
+
+
+@pytest.mark.parametrize("mode, expected_source", [
+    ("success", "agent"), ("timeout", "template_fallback"),
+    ("omitted", "template_fallback"), ("persist_failure", "template"),
+    ("no_model", "template"), ("stale_candidate", "template"),
+    ("already_rejected", "template"),
+])
+def test_postcommit_explanation_preserves_single_candidate(monkeypatch, mode, expected_source):
+    from sqlalchemy import func
+    from sqlalchemy.orm import Session
+    from app.api.routes.recovery import get_recovery_workflow
+    from app.main import app
+    from app.modules.recovery.deterministic_workflow import RecoveryWorkflow
+    from app.modules.decisions.service import DeterministicDecisionService
+
+    day = date(2026, 12, 7)
+    now = datetime(2026, 12, 7, 8, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr(deterministic_context, "_now", lambda: now)
+    solves = []
+    original_solve = ORToolsSolver.solve
+    def counted_solve(self, data):
+        if data.recovery_scope is not None:
+            solves.append(data.recovery_scope)
+        return original_solve(self, data)
+    monkeypatch.setattr(ORToolsSolver, "solve", counted_solve)
+    holder = {}
+    original_flush = Session.flush
+    def flush(self, *args, **kwargs):
+        if mode == "persist_failure" and any(
+            isinstance(obj, RecoveryPlan) and
+            (obj.solver_validation_summary or {}).get("explanation_source") == "agent"
+            for obj in self.dirty
+        ):
+            raise RuntimeError("injected explanation persistence failure")
+        return original_flush(self, *args, **kwargs)
+    monkeypatch.setattr(Session, "flush", flush)
+
+    class Model:
+        calls = 0
+        def arrange(self, facts):
+            self.calls += 1
+            # No database transaction or lock held by the workflow across transport.
+            assert not holder["workflow"].session.in_transaction()
+            with sessions() as session:
+                attempt = session.scalar(select(RecoveryPlan).where(RecoveryPlan.incident_id == holder["incident"]))
+                assert attempt.status.value == "PENDING_REVIEW"
+                assert attempt.agent_explanation
+                assert attempt.solver_validation_summary["explanation_source"] == "template"
+                attempt_id, candidate_id = attempt.id, attempt.candidate_delivery_plan_id
+            assert {fact.id for fact in facts} == {"summary", "impact", "replanning", "result", "risks", "review", "travel_source", "provenance"}
+            assert "NO_COMPARABLE_REMAINDER_SNAPSHOT" in "".join(f.text for f in facts)
+            if mode == "timeout":
+                raise TimeoutError()
+            if mode == "omitted":
+                return {"fact_ids": ["result"]}
+            if mode == "stale_candidate":
+                with sessions() as session, session.begin():
+                    stop = session.scalar(select(RouteStop).join(VehicleRoute).where(VehicleRoute.delivery_plan_id == candidate_id))
+                    stop.planned_arrival_at += timedelta(seconds=1)
+            if mode == "already_rejected":
+                DeterministicDecisionService(sessions, clock=lambda: now).decide(attempt_id, "REJECT", "review during model", "reviewer")
+            return {"fact_ids": [fact.id for fact in reversed(facts)]}
+
+    model = Model()
+    with demo_client(lambda: now, recovery_mode="agent", explanation_client=model) as (client, sessions):
+        incident_id, base_id = merchant_incident(client, sessions, day)
+        from uuid import UUID
+        holder["incident"] = UUID(incident_id)
+        def workflow_dependency():
+            with sessions() as session:
+                workflow = RecoveryWorkflow(session, mode="agent", explanation_client=None if mode == "no_model" else model)
+                holder["workflow"] = workflow
+                yield workflow
+        app.dependency_overrides[get_recovery_workflow] = workflow_dependency
+        response = _post_ok(client, f"/api/incidents/{incident_id}/recovery", {}, 201, "RECOVERY_PENDING_REVIEW")
+        with sessions() as session:
+            attempts = list(session.scalars(select(RecoveryPlan).where(RecoveryPlan.incident_id == holder["incident"])))
+            assert len(attempts) == 1 and len(solves) == 1
+            attempt = attempts[0]
+            assert session.scalar(select(func.count()).select_from(DeliveryPlan).where(DeliveryPlan.parent_plan_id == base_id)) == 1
+            assert attempt.solver_validation_summary["explanation_source"] == expected_source
+            assert response["agent_explanation"] == attempt.agent_explanation
+            assert session.get(DeliveryPlan, base_id).status is DeliveryPlanStatus.CURRENT
+            if mode == "already_rejected":
+                assert attempt.status.value == "DECIDED"
+                assert attempt.dispatcher_decision.value == "REJECT"
+            else:
+                assert attempt.status.value == "PENDING_REVIEW"
+                assert session.get(DeliveryPlan, attempt.candidate_delivery_plan_id).status is DeliveryPlanStatus.CANDIDATE
+        assert model.calls == (0 if mode == "no_model" else 1)

@@ -1,6 +1,7 @@
 from langgraph.graph import END, START, StateGraph
 from .client import ExplanationClient
-from .contracts import AgentResult, ExplanationFact, ExplanationOutline, RecoveryExplanation
+from .contracts import AgentResult, ExplanationFact, RecoveryExplanation
+from .explanation import arrange_facts
 from .state import AgentState
 from .tools import ControlledTools
 
@@ -77,19 +78,9 @@ def run_agent(tools: ControlledTools, client: ExplanationClient | None = None) -
     def explain(state):
         context, observed = state["context"], state["observation"]
         facts = explanation_facts(context, observed)
-        ordered = [f.id for f in facts]
-        source, diagnostics = "template", ()
-        # Only explain verified feasible solutions using model assistance.
-        if client is not None and observed.solver.status == "FEASIBLE" and observed.validation.status == "VALID":
-            try:
-                outline = ExplanationOutline.model_validate(client.arrange(facts))
-                if len(set(outline.fact_ids)) != len(outline.fact_ids) or set(outline.fact_ids) - set(ordered):
-                    raise ValueError("Unknown or repeated evidence ID")
-                # Model cannot omit failed/unassigned/human-approval facts.
-                ordered = list(outline.fact_ids) + [fid for fid in ordered if fid not in outline.fact_ids]
-                source = "model"
-            except Exception:
-                source, diagnostics = "fallback", ("AGENT_EXPLANATION_FALLBACK",)
+        model = client if observed.solver.status == "FEASIBLE" and observed.validation.status == "VALID" else None
+        arranged, source, diagnostics = arrange_facts(facts, model)
+        ordered = [fact.id for fact in arranged]
         lookup = {f.id: f.text for f in facts}
         explanation = "\n".join(lookup[fid] for fid in ordered)
         section = lambda ids: "\n".join(lookup[fid] for fid in ordered if fid in ids)

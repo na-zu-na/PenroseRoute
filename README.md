@@ -51,14 +51,14 @@ See [`database/README.md`](database/README.md) for the SQL file boundaries.
 
 `GET /api/operations/simulated-positions?business_date=YYYY-MM-DD` returns GPS-style positions for every vehicle in the current plan. Poll it once per second; the response includes route paths, timestamps, motion states and `source: "SIMULATED"`. The default loop is 120 seconds. This is a read-only visualization feed; no real GPS is connected and business vehicle locations are unchanged. See [模拟车辆位置接口](backend/docs/SIMULATED_GPS.md) for the response contract, frontend usage and route-geometry limits.
 
-## Dispatch Agent
+## Agent 查询与异常恢复
 
-跨模块调度入口为 `POST /api/agent/dispatch`：支持资源/运营查询、异常恢复、候选读取、版本比较和多轮参数补充。正常规划独立调用 `POST /api/planning/generate`，不经过 Agent。默认规则识别，可选 Bedrock；API 需要配置身份令牌及上下文签名密钥。
+`POST /api/agent/dispatch` 是正式只读入口，支持运营摘要、资源、Recovery 详情和按 Recovery ID 的 U01 比较。reader 与 dispatcher 均不能通过对话启动恢复、规划或审批。签名上下文支持缺参续问，默认规则与模板，可选 Bedrock。
 
-已提供实际 OR-Tools 求解、异常影响规则、恢复候选入库与独立人工审核接口。默认行程为地理距离估算，结果不会自动生效。没有前端地图或常驻监控进程。
+正常规划使用 `POST /api/planning/generate`。异常恢复统一使用 `POST /api/incidents/{incident_id}/recovery`，由 `RECOVERY_ORCHESTRATION_MODE=deterministic|agent` 控制内部模式。候选必须经独立人工审批才能生效。
 
-商家延迟可通过 `POST /api/incidents/merchant-delay` 评估；无需 Agent 的确定性恢复使用 `POST /api/incidents/{id}/deterministic-recovery`，需要调度员令牌。`POST /api/incidents/{id}/recovery` 保留 Agent 恢复流程。
+Agent 模式在 Candidate 持久化后才允许模型读取 U01 可信事实；模型只能返回事实 ID 的完整排列，失败回退模板。数据库事务结束后才调用模型。
 
-完整配置、请求示例、业务 API 和测试边界见 [调度 Agent 使用说明](backend/docs/DISPATCH_AGENT.md)。原有恢复编排设计见 [恢复 Agent 接入说明](backend/docs/AGENT_INTEGRATION.md)。
+U06 告警生命周期已存在，但周期 Worker 与正式提醒读取服务尚未接入当前 Agent 扩展。提醒解释请求明确返回数据不可用，不把订单风险标志作为活动提醒。
 
-依据《Recovery Agent 开发任务说明》的逐项核对、本次补全和结构化结果契约见 [Recovery Agent 功能验收](backend/docs/RECOVERY_AGENT_REQUIREMENTS.md)。
+最新配置、请求示例及调用时序见 [P1 Agent 只读 API](backend/docs/P1_AGENT_READONLY_API.md)。交付状态、测试和未完成依赖见 [P1 Agent Workstream](backend/docs/P1_AGENT_WORKSTREAM_STATUS.md)。旧 Dispatch/Recovery 文档保留原型设计，若存在差异以上述正式契约为准。

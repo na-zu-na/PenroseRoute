@@ -74,7 +74,7 @@ def evidence_from_plan_comparison(comparison):
         )
     if handovers:
         risks.append("货物交接尚待现场执行确认。")
-    risks.append("候选尚未批准，不能描述为当前执行计划。")
+    risks.append("候选尚未批准，不能描述为当前执行计划。" if comparison.reviewable else "历史比较仅供审计，不代表当前计划或仍可审批的候选。")
     return RecoveryEvidence(
         source="P1_PLAN_COMPARISON",
         comparison_at=comparison.comparison_at,
@@ -142,7 +142,8 @@ def explanation_from_plan_comparison(evidence: RecoveryEvidence):
     structured = RecoveryExplanation(
         summary=(
             "U01 在同一 Base/Candidate 与 Attempt 记录时点生成比较；"
-            f"候选可审核={evidence.reviewable}，尚未生效。"
+            f"比较记录时点 {evidence.comparison_at}；"
+            + ("候选可审核，尚未生效。" if evidence.reviewable else "历史比较仅供审计，不代表当前状态。")
         ),
         impact_explanation=(
             "Completed Freeze 订单："
@@ -239,3 +240,25 @@ def project_evidence(input_json, result):
                "unassigned_order_count": len(unassigned), "vehicle_count": len(new),
                "total_distance_meters": sum(distances.values()), "total_duration_seconds": sum(durations.values())},
         remaining_risks=tuple(risks))
+
+
+def comparison_explanation_facts(evidence, comparison=None):
+    """One authoritative comparison, materialized before model transport."""
+    from app.integrations.agent.contracts import ExplanationFact
+    _, sections = explanation_from_plan_comparison(evidence)
+    facts = (
+        ExplanationFact(id="summary", text=sections.summary),
+        ExplanationFact(id="impact", text=sections.impact_explanation),
+        ExplanationFact(id="replanning", text=sections.replanning_explanation),
+        ExplanationFact(id="result", text=sections.result_explanation),
+        ExplanationFact(id="risks", text="剩余风险：" + "；".join(sections.remaining_risks)),
+        ExplanationFact(id="review", text=("候选必须经 Dispatcher 人工批准才能生效；当前计划尚未切换。" if evidence.reviewable else "本次历史比较不可用于批准；请查询当前计划和最新审核状态。")),
+        ExplanationFact(id="travel_source", text="ETA 基于计划停靠时间；行程采用地理距离与固定车速估算，未接入实时交通。"),
+    )
+    if comparison is not None:
+        facts += (ExplanationFact(id="provenance", text=(
+            f"Recovery {comparison.recovery_plan_id}；Base {comparison.base_plan_id}；"
+            f"Candidate {comparison.candidate_plan_id}；业务日期 {comparison.business_date}；"
+            f"比较时间口径 {comparison.comparison_time_basis}；记录时点 {comparison.comparison_at}。"
+        )),)
+    return facts

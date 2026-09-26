@@ -44,14 +44,13 @@ def test_recovery_forbids_reader():
     assert response.json()["code"] == "DISPATCH_FORBIDDEN"
 
 
-def test_p0_app_import_does_not_require_agent_modules():
+def test_p0_app_import_does_not_require_agent_runtime_or_legacy_workflows():
     code = """
 import importlib.abc
 import sys
 
 blocked = (
-    "app.integrations.agent", "app.integrations.dispatch_agent",
-    "app.modules.dispatch", "app.modules.recovery.bootstrap",
+    "app.integrations.agent.graph", "app.modules.recovery.bootstrap",
     "app.modules.recovery.workflow", "app.modules.recovery.orchestration",
     "app.modules.planning.service", "app.modules.incidents.service",
     "langgraph", "boto3",

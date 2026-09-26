@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Action = Literal[
     "get_resource_availability", "get_delivery_status",
-    "start_incident_recovery", "get_recovery_proposal", "compare_plan_versions",
+    "get_recovery_proposal", "compare_plan_versions", "explain_risk_alert",
 ]
 
 
@@ -16,6 +16,8 @@ class StrictModel(BaseModel):
 
 class DispatchContext(StrictModel):
     business_date: date | None = None
+    order_id: UUID | None = None
+    alert_id: UUID | None = None
     incident_id: UUID | None = None
     recovery_plan_id: UUID | None = None
     base_plan_id: UUID | None = None
@@ -46,4 +48,6 @@ class DispatchReply(StrictModel):
     context: DispatchContext
     observations: tuple[ToolObservation, ...] = ()
     planner_source: Literal["rules", "model", "fallback"] = "rules"
+    explanation_source: Literal["template", "model", "fallback"] = "template"
+    diagnostic_codes: tuple[str, ...] = ()
     context_token: str | None = None

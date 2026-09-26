@@ -153,11 +153,11 @@ def execute_agent_attempt(context, attempt_id, attempt_no, previous_id, fallback
     capability = Capability()
     tools = ControlledTools(agent_context, capability)
     try:
-        result = run_agent(tools, client)
+        result = run_agent(tools, None)
         return AgentAttemptExecution(
             outcome=capability.outcome,
             explanation=result.agent_explanation,
-            source="agent" if result.explanation_source == "model" else "template_fallback",
+            source="template",
             tool_trace=result.tool_trace,
             structured_explanation=result.explanation.model_dump(mode="json") if result.explanation else None,
             recovery_evidence=(

@@ -9,7 +9,7 @@ from app.integrations.agent.contracts import (
     AttemptRecord, ExplanationOutline, RecoveryError, SolverResult, ValidationReport)
 from app.integrations.agent.client import BedrockExplanationClient
 from app.integrations.agent.tools import ControlledTools
-from app.modules.recovery.orchestration import BoundReplanningCapability, RecoveryOrchestrator
+from app.modules.recovery.orchestration import BoundReplanningCapability, PreparedAttempt, RecoveryOrchestrator
 from app.modules.recovery.workflow import RecoveryWorkflow
 from tests.agent.fixture_backend import FixtureApplication
 from app.api.routes.recovery import build_recovery_router
@@ -70,12 +70,16 @@ def test_missing_handover_rejected():
         workflow(app).run(app.incident_id)
 
 
-@pytest.mark.parametrize("mode", ["unknown-id", "duplicate", "timeout"])
+@pytest.mark.parametrize("mode", ["unknown-id", "duplicate", "timeout", "empty", "missing-review"])
 def test_model_fallback_cannot_mutate_solver_or_approval(mode):
     class BadClient:
         def arrange(self, facts):
             if mode == "timeout":
                 raise TimeoutError()
+            if mode == "empty":
+                return {"fact_ids": []}
+            if mode == "missing-review":
+                return ExplanationOutline(fact_ids=tuple(f.id for f in facts if f.id != "review"))
             return ExplanationOutline(fact_ids=("approve_plan",) if mode == "unknown-id" else ("solver", "solver"))
     app = FixtureApplication(("VALID",))
     prepared = app.prepare_attempt(app.incident_id, None, None)
@@ -93,7 +97,7 @@ def test_model_cannot_omit_mandatory_facts():
     reply = workflow(app, MinimalClient()).run(app.incident_id)
     text = reply.data["agent_explanation"]
     assert "人工批准" in text and "未分配" in text and "VALID" in text
-    assert text.startswith("验证结果中的总距离")
+    assert reply.data["explanation_source"] == "fallback"
 
 
 def test_invalid_solution_not_sent_to_model():
@@ -285,3 +289,20 @@ def test_bedrock_endpoint_and_timeout_settings(monkeypatch):
     client._client()
     assert received["endpoint_url"] == "https://bedrock.example.test"
     assert received["config"].connect_timeout == 2 and received["config"].read_timeout == 7
+
+
+def test_complete_reversed_permutation_is_model_success():
+    class CompleteClient:
+        def arrange(self, facts):
+            return ExplanationOutline(fact_ids=tuple(f.id for f in reversed(facts)))
+    app = FixtureApplication(("VALID",))
+    prepared = app.prepare_attempt(app.incident_id, None, None)
+    prepared = PreparedAttempt(
+        prepared.context.model_copy(update={"travel_time_source": "GEOGRAPHIC_ESTIMATE"}),
+        prepared.optimization_input_json,
+    )
+    result = RecoveryOrchestrator(app.solver, app.validator, CompleteClient()).run_attempt(prepared)
+    assert result.explanation_source == "model"
+    assert "人工批准" in result.agent_explanation
+    assert "未分配" in result.agent_explanation
+    assert "地理距离" in result.agent_explanation

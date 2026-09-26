@@ -81,6 +81,7 @@ def test_p0_openapi_has_all_59_formal_endpoints_and_no_temporary_recovery():
     }
     # Demo and P1 endpoints do not change the original 59-endpoint P0 contract.
     non_p0 = {
+        ("POST", "/api/agent/dispatch"),
         ("GET", "/api/operations/simulated-positions"),
         ("GET", "/api/recovery-plans/{}/comparison"),
     }

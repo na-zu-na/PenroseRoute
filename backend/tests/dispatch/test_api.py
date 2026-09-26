@@ -37,7 +37,6 @@ from app.integrations.optimization.solver import solve, validate
 app = FastAPI()
 register_error_handlers(app)
 app.include_router(api_router)
-app.include_router(dispatch_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
 
 
@@ -61,7 +60,7 @@ def test_real_http_end_to_end_dispatch_recovery_approval(database):
     planning = PlanningService(sessions, clock=lambda: now)
     recovery = RecoveryWorkflow(SqlRecoveryApplication(sessions, clock=lambda: now+timedelta(seconds=60)), RecoveryOrchestrator(solve, validate, evidence_projector=project_evidence))
     service = DispatchService(DispatchQueries(sessions, clock=lambda: now), codec=ContextCodec("x"*32),
-        recovery=recovery, clock=lambda: now)
+        clock=lambda: now)
     app.dependency_overrides.update({authenticate_dispatch_user: lambda: Principal("alice", "dispatcher"),
         get_dispatch_service: lambda: service,
         get_incident_service: lambda: IncidentService(sessions, clock=lambda: now),
@@ -84,20 +83,20 @@ def test_real_http_end_to_end_dispatch_recovery_approval(database):
         "vehicle_route_id": str(route_id), "incident_location_id": str(ids["pickup"])})
     assert response.status_code == 201
     incident_id = response.json()["data"]["incident_id"]
-    response = client.post("/api/agent/dispatch", json={"message": "查看今天风险和车辆，生成恢复方案并比较差异",
-        "context": {"incident_id": incident_id}})
+    blocked = client.post("/api/agent/dispatch", json={"message": "生成恢复方案", "context": {"incident_id": incident_id}})
+    assert blocked.json()["code"] == "DISPATCH_NEEDS_INPUT"
+    # Writes remain in the legacy workflow under test, never in dispatch.
+    reply = recovery.run(UUID(incident_id))
+    recovery_id = reply.data["reviewable_recovery_plan_id"]
+    response = client.post("/api/agent/dispatch", json={"message": "查看候选并比较差异",
+        "context": {"recovery_plan_id": recovery_id}})
     result = response.json()
     assert result["code"] == "DISPATCH_COMPLETED", result
-    assert len(result["data"]["observations"]) == 5
-    recovery_data = result["data"]["observations"][2]["data"]
-    assert recovery_data["explanation"]["impact_explanation"]
-    assert recovery_data["manual_intervention_required"] is True
-    assert recovery_data["recovery_evidence"]["reassigned_orders"][0]["to_vehicle_id"] == str(vehicle_id)
-    proposal = result["data"]["observations"][3]["data"]
-    assert proposal["structured_explanation"] == recovery_data["explanation"]
-    for field, value in recovery_data["recovery_evidence"]["after"].items():
-        assert proposal["candidate_plan"][field] == value
-    recovery_id = result["data"]["context"]["recovery_plan_id"]
+    assert len(result["data"]["observations"]) == 2
+    comparison = result["data"]["observations"][1]["data"]
+    assert comparison["recovery_plan_id"] == recovery_id
+    assert comparison["reviewable"] is True
+    assert comparison["remaining_metrics"]["reason"] == "NO_COMPARABLE_REMAINDER_SNAPSHOT"
     response = client.post(f"/api/recovery-plans/{recovery_id}/approve", json={"decision_reason": "调度员确认接手"})
     assert response.status_code == 200 and response.json()["data"]["candidate_status"] == "CURRENT"
 
@@ -111,6 +110,6 @@ def test_real_api_auth_and_reader_permissions(monkeypatch):
     client = TestClient(app)
     assert client.post("/api/agent/dispatch", json={"message": "今天状态"}).status_code == 401
     response = client.post("/api/agent/dispatch", headers={"Authorization": "Bearer "+key}, json={"message": "生成恢复方案"})
-    assert response.status_code == 403 and response.json()["code"] == "DISPATCH_FORBIDDEN"
+    assert response.status_code == 200 and response.json()["code"] == "DISPATCH_NEEDS_INPUT"
     response = client.post(f"/api/recovery-plans/{uuid4()}/approve", headers={"Authorization": "Bearer "+key}, json={"decision_reason": "test"})
     assert response.status_code == 403

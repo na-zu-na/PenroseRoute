@@ -59,10 +59,10 @@ def test_real_resource_and_risk_queries(database):
     sessions, now, day, ids = database
     query = DispatchQueries(sessions, clock=lambda: now)
     assert query.resources(day)["idle_count"] == 1
-    assert query.operations(day)["at_risk_count"] == 0
+    # Order flags cannot stand in for a Current Plan or persistent U06 Alert.
+    assert query.operations(day)["current_plan"] is None
     with sessions() as s, s.begin():
         s.get(Order, ids["order"]).risk_status = "AT_RISK"
-    assert query.operations(day)["at_risk_count"] == 1
-    with sessions() as s, s.begin():
-        s.get(Order, ids["order"]).execution_status = "COMPLETED"
-    assert query.operations(day)["at_risk_count"] == 0
+    data = query.operations(day)
+    assert data["current_plan"] is None
+    assert "ALERT_QUERY_UNAVAILABLE" in data["missing_reasons"]
