@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, Field
+from pydantic import AwareDatetime, SecretStr, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     app_name: str = "PenroseRoute API"
     app_env: str = "development"
+    demo_decision_now: AwareDatetime | None = None
     frontend_origins: str = (
         "http://localhost:5173,http://127.0.0.1:5173,"
         "http://localhost:3000,http://127.0.0.1:3000"

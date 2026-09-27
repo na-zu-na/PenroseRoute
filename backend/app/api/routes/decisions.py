@@ -5,6 +5,7 @@ from app.api.auth import Principal
 from app.api.dependencies import get_request_id, get_recovery_mode, get_recovery_explanation_client
 from app.api.routes.recovery import require_operations_user
 from app.core.responses import success_response
+from app.core.config import get_settings
 from app.modules.decisions.service import DeterministicDecisionService
 
 router = APIRouter(prefix="/recovery-plans", tags=["Human decisions"])
@@ -26,7 +27,10 @@ def get_decision_service(
     explanation_client=Depends(get_recovery_explanation_client),
 ):
     from app.db.session import SessionLocal
-    return DeterministicDecisionService(SessionLocal, recovery_mode=mode, explanation_client=explanation_client)
+    settings = get_settings()
+    demo_now = settings.demo_decision_now if settings.app_env == "development" else None
+    return DeterministicDecisionService(SessionLocal, demo_decision_now=demo_now,
+                                        recovery_mode=mode, explanation_client=explanation_client)
 
 
 def envelope(data, *, code: str, message: str, request_id: str):

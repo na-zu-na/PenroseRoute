@@ -31,6 +31,7 @@ def _plan(plan_id: UUID, *, stop_id: int = 1, completed: bool = False):
     delivery.precedence_stop_id = pickup.id
     route = SimpleNamespace(
         id=route_id, vehicle_id=VEHICLE, route_no=1,
+        distance_meters=1000, planned_end_at=AT + timedelta(hours=1),
         stops=[pickup, delivery],
     )
     membership = SimpleNamespace(
@@ -73,8 +74,34 @@ def test_completed_facts_are_reported_as_frozen_when_preserved():
     )
 
     assert result.frozen_completed_order_ids == (ORDER,)
+    assert result.plan_impact.completed_stops_protected == 2
+    assert result.plan_impact.unchanged_route_tasks == 2
     assert result.orders[0].eta_delta_seconds is None
     assert result.orders[0].eta_unavailable_reason == "COMPLETED_DELIVERY"
+
+
+def test_plan_impact_compares_persisted_route_distance_and_latest_finish():
+    from app.modules.planning.comparison import compare_plan_snapshots
+
+    base = _plan(BASE)
+    candidate = _plan(CANDIDATE, stop_id=10)
+    candidate.routes[0].distance_meters = 1250
+    candidate.routes[0].planned_end_at += timedelta(minutes=15)
+
+    result = compare_plan_snapshots(
+        recovery_plan_id=UUID(int=999), comparison_at=AT,
+        base=base, candidate=candidate, reviewable=True,
+    )
+
+    assert result.plan_impact.base_plan_distance_meters == 1000
+    assert result.plan_impact.candidate_plan_distance_meters == 1250
+    assert result.plan_impact.planned_distance_delta_meters == 250
+    assert result.plan_impact.base_completion_at == AT + timedelta(hours=1)
+    assert result.plan_impact.candidate_completion_at == AT + timedelta(hours=1, minutes=15)
+    assert result.plan_impact.planned_completion_delta_seconds == 900
+    assert result.plan_impact.completed_stops_protected == 0
+    assert result.plan_impact.unchanged_route_tasks == 2
+    assert result.remaining_metrics.reason == "NO_COMPARABLE_REMAINDER_SNAPSHOT"
 
 
 def test_completed_order_is_not_marked_frozen_if_its_pickup_fact_changed():

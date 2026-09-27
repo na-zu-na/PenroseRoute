@@ -8,7 +8,7 @@ from app.db.models import Vehicle, Driver, VehicleDriverAssignment, RecoveryPlan
 from app.db.models.fleet import ResourceStatus, AssignmentStatus
 from tests.integration.test_recovery_workflow import (
     recovery_client, prepare_route, create_incident, _p0_decision_override,
-    fixed_recovery_clock,
+    fixed_recovery_clock, isolated_recovery_seed,
 )
 
 
@@ -268,6 +268,85 @@ def test_expired_schedule_cannot_be_approved_without_fact_changes():
         assert caught.value.code == 'CANDIDATE_SCHEDULE_STALE'
         session.expire_all()
         assert session.get(DeliveryPlan, selected['candidate_delivery_plan_id']).status.value == 'CANDIDATE'
+
+
+def test_approval_before_incident_detection_is_a_conflict_not_server_error():
+    from sqlalchemy.orm import Session
+    from app.core.errors import Conflict
+    from app.modules.decisions.service import DeterministicDecisionService
+
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        async def run():
+            incident = await create_incident(client)
+            response = await client.post(f'/api/incidents/{incident}/recovery', json={})
+            assert response.status_code == 201, response.text
+            return response.json()['data']['reviewable_recovery_plan_id']
+        recovery_id = asyncio.run(run())
+        service = DeterministicDecisionService(lambda: Session(bind=session.get_bind(),
+            autoflush=False, expire_on_commit=False, join_transaction_mode='create_savepoint'),
+            clock=lambda: datetime.fromisoformat('2026-09-25T10:04:00+08:00'))
+        with pytest.raises(Conflict) as caught:
+            service.decide(recovery_id, 'APPROVE', 'Review', 'dispatcher-test')
+        assert caught.value.code == 'INCIDENT_NOT_OCCURRED_YET'
+        session.expire_all()
+        assert session.get(RecoveryPlan, recovery_id).status.value == 'PENDING_REVIEW'
+
+
+def test_development_demo_clock_allows_approval_at_simulated_operational_time(monkeypatch):
+    from sqlalchemy.orm import Session
+    from app.api.routes.decisions import get_decision_service
+    from app.core.config import get_settings
+    from app.db import session as db_session
+
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        async def run():
+            incident = await create_incident(client)
+            response = await client.post(f'/api/incidents/{incident}/recovery', json={})
+            assert response.status_code == 201, response.text
+            return response.json()['data']['reviewable_recovery_plan_id']
+        recovery_id = asyncio.run(run())
+        monkeypatch.setenv('APP_ENV', 'development')
+        monkeypatch.setenv('DEMO_DECISION_NOW', '2026-09-25T10:06:00+08:00')
+        get_settings.cache_clear()
+        monkeypatch.setattr(db_session, 'SessionLocal', lambda: Session(bind=session.get_bind(),
+            autoflush=False, expire_on_commit=False, join_transaction_mode='create_savepoint'))
+        try:
+            service = get_decision_service('deterministic', None)
+            result = service.decide(recovery_id, 'APPROVE', 'Simulated review', 'dispatcher-test')
+            assert result['candidate_status'] == 'CURRENT'
+            assert result['incident_status'] == 'RESOLVED'
+            assert result['reviewed_at'] == '2026-09-25T10:06:00+08:00'
+        finally:
+            get_settings.cache_clear()
+
+
+def test_demo_clock_does_not_change_decisions_for_another_business_date(monkeypatch):
+    from sqlalchemy.orm import Session
+    from app.api.routes.decisions import get_decision_service
+    from app.core.config import get_settings
+    from app.db import session as db_session
+
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        async def run():
+            incident = await create_incident(client)
+            response = await client.post(f'/api/incidents/{incident}/recovery', json={})
+            assert response.status_code == 201, response.text
+            return response.json()['data']['reviewable_recovery_plan_id']
+        recovery_id = asyncio.run(run())
+        monkeypatch.setenv('APP_ENV', 'development')
+        monkeypatch.setenv('DEMO_DECISION_NOW', '2026-09-28T17:56:00+08:00')
+        get_settings.cache_clear()
+        monkeypatch.setattr(db_session, 'SessionLocal', lambda: Session(bind=session.get_bind(),
+            autoflush=False, expire_on_commit=False, join_transaction_mode='create_savepoint'))
+        try:
+            service = get_decision_service('deterministic', None)
+            result = service.decide(recovery_id, 'APPROVE', 'Ordinary review', 'dispatcher-test')
+            assert result['reviewed_at'] != '2026-09-28T17:56:00+08:00'
+        finally:
+            get_settings.cache_clear()
 
 
 def test_legacy_pending_candidate_must_be_decided_before_switching_workflows():

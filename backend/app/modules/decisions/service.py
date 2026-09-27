@@ -92,11 +92,18 @@ class DeterministicDecisionService:
     """P0 human decisions; orchestration mode affects only the next attempt."""
 
     def __init__(self, session_factory, clock=lambda: datetime.now(timezone.utc), *,
-                 recovery_mode="deterministic", explanation_client=None):
+                 recovery_mode="deterministic", explanation_client=None,
+                 demo_decision_now=None):
         self.sessions = session_factory
         self.clock = clock
         self.recovery_mode = recovery_mode
         self.explanation_client = explanation_client
+        self.demo_decision_now = demo_decision_now
+
+    def _decision_time(self, business_date):
+        if self.demo_decision_now is not None and business_date == self.demo_decision_now.date():
+            return self.demo_decision_now
+        return self.clock()
 
     def decide(self, recovery_id, decision, reason, subject):
         from app.core.errors import BusinessError
@@ -108,8 +115,12 @@ class DeterministicDecisionService:
             raise BusinessError(code="DECISION_INVALID", message="A decision reason is required")
         with self.sessions() as session, session.begin():
             recovery, base, candidate, incident = self._lock_reviewable(session, recovery_id, validate_facts=decision == "APPROVE")
-            now = self.clock()
+            now = self._decision_time(base.business_date)
             if decision == "APPROVE":
+                if now < incident.detected_at:
+                    from app.core.errors import Conflict
+                    raise Conflict(code="INCIDENT_NOT_OCCURRED_YET",
+                                   message="Incident detection time is in the future; use the matching operational clock")
                 option = (recovery.solver_validation_summary or {}).get("options")
                 if option:
                     from app.core.errors import Conflict
@@ -196,7 +207,7 @@ class DeterministicDecisionService:
                     code="RECOVERY_ALREADY_DECIDED",
                     message="A newer recovery attempt already exists",
                 )
-            now = self.clock()
+            now = self._decision_time(base.business_date)
             candidate.status = DeliveryPlanStatus.CANCELLED
             recovery.status = RecoveryPlanStatus.DECIDED
             recovery.dispatcher_decision = DispatcherDecision.MODIFY

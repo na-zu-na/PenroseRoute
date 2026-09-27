@@ -86,6 +86,20 @@ class RemainingMetricsView:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanImpactView:
+    """Whole-plan estimates from persisted route snapshots, not traveled remainder."""
+
+    base_plan_distance_meters: int
+    candidate_plan_distance_meters: int
+    planned_distance_delta_meters: int
+    base_completion_at: datetime | None
+    candidate_completion_at: datetime | None
+    planned_completion_delta_seconds: int | None
+    completed_stops_protected: int
+    unchanged_route_tasks: int
+
+
+@dataclass(frozen=True, slots=True)
 class PlanComparisonView:
     recovery_plan_id: UUID
     base_plan_id: UUID
@@ -103,6 +117,7 @@ class PlanComparisonView:
     affected_vehicle_ids: tuple[UUID, ...]
     frozen_completed_order_ids: tuple[UUID, ...]
     remaining_metrics: RemainingMetricsView
+    plan_impact: PlanImpactView
 
 
 def _value(value: object) -> str:
@@ -279,6 +294,21 @@ def compare_plan_snapshots(*, recovery_plan_id: UUID, comparison_at: datetime,
     for item in orders:
         if item.assignment_changed:
             affected.update(vehicle for vehicle in (item.base_vehicle_id, item.candidate_vehicle_id) if vehicle)
+    base_completion = max((route.planned_end_at for route in base.routes), default=None)
+    candidate_completion = max((route.planned_end_at for route in candidate.routes), default=None)
+    base_distance = sum(route.distance_meters for route in base.routes)
+    candidate_distance = sum(route.distance_meters for route in candidate.routes)
+    unchanged_actions = (
+        (before, after)
+        for key, before in base_actions.items()
+        if (after := candidate_actions.get(key)) is not None
+        and _stop_signature(*before, base_actions) == _stop_signature(*after, candidate_actions)
+    )
+    unchanged_count = completed_count = 0
+    for (old_stop, _), _ in unchanged_actions:
+        unchanged_count += 1
+        if _value(old_stop.status) == "COMPLETED":
+            completed_count += 1
     return PlanComparisonView(
         recovery_plan_id=recovery_plan_id,
         base_plan_id=base.id, candidate_plan_id=candidate.id,
@@ -298,6 +328,19 @@ def compare_plan_snapshots(*, recovery_plan_id: UUID, comparison_at: datetime,
             delta_distance_meters=None, base_duration_seconds=None,
             candidate_duration_seconds=None, delta_duration_seconds=None,
             reason="NO_COMPARABLE_REMAINDER_SNAPSHOT",
+        ),
+        plan_impact=PlanImpactView(
+            base_plan_distance_meters=base_distance,
+            candidate_plan_distance_meters=candidate_distance,
+            planned_distance_delta_meters=candidate_distance - base_distance,
+            base_completion_at=base_completion,
+            candidate_completion_at=candidate_completion,
+            planned_completion_delta_seconds=(
+                round((candidate_completion - base_completion).total_seconds())
+                if base_completion is not None and candidate_completion is not None else None
+            ),
+            completed_stops_protected=completed_count,
+            unchanged_route_tasks=unchanged_count,
         ),
     )
 

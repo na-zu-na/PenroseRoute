@@ -855,8 +855,8 @@ def test_dispatcher_cannot_approve_inconsistent_candidate() -> None:
         assert session.get(Incident, incident_id).status.value == "REVIEW"
 
 
-def test_approval_database_failure_rolls_back_every_state_change() -> None:
-    from sqlalchemy.exc import IntegrityError
+def test_premature_approval_conflict_preserves_every_state() -> None:
+    from app.core.errors import Conflict
 
     from app.modules.decisions.service import DeterministicDecisionService
 
@@ -879,10 +879,11 @@ def test_approval_database_failure_rolls_back_every_state_change() -> None:
             ),
             clock=bad_clock,
         )
-        with pytest.raises(IntegrityError):
+        with pytest.raises(Conflict) as caught:
             service.decide(
                 data["reviewable_recovery_plan_id"], "APPROVE", "Premature approval", "dispatcher-test"
             )
+        assert caught.value.code == "INCIDENT_NOT_OCCURRED_YET"
         session.expire_all()
         candidate = session.get(DeliveryPlan, data["candidate_delivery_plan_id"])
         assert candidate.status is DeliveryPlanStatus.CANDIDATE

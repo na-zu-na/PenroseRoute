@@ -196,6 +196,19 @@ class RemainingMetricsResponse(BaseModel):
     reason: str | None
 
 
+class PlanImpactResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    base_plan_distance_meters: int
+    candidate_plan_distance_meters: int
+    planned_distance_delta_meters: int
+    base_completion_at: datetime | None
+    candidate_completion_at: datetime | None
+    planned_completion_delta_seconds: int | None
+    completed_stops_protected: int
+    unchanged_route_tasks: int
+
+
 class PlanComparisonResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -215,3 +228,4 @@ class PlanComparisonResponse(BaseModel):
     affected_vehicle_ids: tuple[UUID, ...]
     frozen_completed_order_ids: tuple[UUID, ...]
     remaining_metrics: RemainingMetricsResponse
+    plan_impact: PlanImpactResponse

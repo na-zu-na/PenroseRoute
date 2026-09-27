@@ -6,7 +6,10 @@ Database initialization is split into three explicit SQL files:
 - `create_datatable.sql` creates the 14 P0 tables, the two P1 alert tables,
   the migration ledger, and their supporting database objects.
 - `reference_data.sql` optionally loads the reference/demo data, including
-  one active alert and its creation event.
+  one active alert and its creation event. This is the fixed September 25
+  legacy scenario, not the server seed.
+- `reference_data_future_week.sql` loads fresh planning resources and orders
+  for the next seven Singapore business dates at import time.
 
 The application never runs these scripts automatically.
 
@@ -39,6 +42,30 @@ The bootstrap records V001 as applied. Upgrade an existing P0 database with
 rerunning the bootstrap; do not apply V001 again after a fresh bootstrap.
 The repository contains no database password; credentials must be supplied by
 the operator through `DATABASE_URL` or the environment.
+
+## Server initialization: next seven business dates
+
+On a **new empty database**, run the schema script and the future-week seed
+instead of the fixed `reference_data.sql` demo seed:
+
+```powershell
+psql -v ON_ERROR_STOP=1 -U postgres -d penrose_route -f database/create_datatable.sql
+psql -v ON_ERROR_STOP=1 -U postgres -d penrose_route -f database/reference_data_future_week.sql
+psql -v ON_ERROR_STOP=1 -U postgres -d penrose_route -f database/validate_future_week_seed.sql
+```
+
+Run `create_database.sql` first if the database does not yet exist. The seed
+uses the Singapore calendar date when imported: tomorrow through day +7,
+12 `PLANNED` orders and five `PLANNED` vehicle-driver pairs per day (84 orders,
+35 daily pairs total). Merchant pickup, customer delivery, windows and all
+timestamps are populated for each date. Running it again or on a populated
+database fails before changing existing data.
+
+This seed intentionally contains **no** Delivery Plans, Routes, Stops,
+Incidents, Recovery Attempts or alerts. Generate and confirm a plan for a
+selected business date through the normal Planning API/UI after deployment;
+create incidents through the formal workflows. The seed cannot be used to
+refresh future dates in an already operating database.
 
 ## Rebuild the September 27 demo without touching the live database
 
