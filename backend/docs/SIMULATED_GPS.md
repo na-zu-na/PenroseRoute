@@ -39,6 +39,8 @@ curl.exe "http://127.0.0.1:8000/api/operations/simulated-positions?business_date
 
 ## 轨迹和业务边界
 
-现有规划结果的 `route_geometry` 为空；模拟器以车辆起点、按顺序排列的 Stop 和终点构成折线，在计划行驶时间段线性插值，在 Stop 的服务时间段保持静止。因此路线**不保证贴合真实道路**，也不能作为实际 ETA、偏航、异常检测或恢复决策的依据。后续有真实道路几何时，可替换轨迹数据；有真实 GPS 时应另建受鉴权的位置上报与存储流程，不应把本接口的模拟坐标写入业务 `locations` 表。
+当路线有 `route_metrics.geometry_provider=OSRM` 和有效的 `road_leg_end_indices` 时，`path` 返回已存的道路 GeoJSON 折线，车辆按当前计划行驶时间段沿对应道路路段的累计距离插值；在 Stop 服务期间停留在道路吸附点。旧路线没有 OSRM 来源时，继续按起点、顺序 Stop 和终点之间的直线插值。旧的手写 `route_geometry` 不代表已验证道路路线；可按 [Operations 工作区文档](OPERATIONS_WORKSPACE.md#set-up-a-local-road-router-and-backfill-the-demo-date)启动 OSRM 并补算。
+
+无论哪种几何，车辆坐标仍是**模拟位置**，不能作为实际 ETA、偏航、异常检测或恢复决策的依据。有真实 GPS 时应另建受鉴权的位置上报与存储流程，不应把本接口的模拟坐标写入业务 `locations` 表。
 
 接口只读取当前生效计划，`Candidate` 计划不会作为模拟来源。读取不会修改 `vehicles.current_location_id` 或 `current_location_recorded_at`。

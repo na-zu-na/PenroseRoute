@@ -3,10 +3,11 @@ from contextlib import contextmanager
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
-from app.db.models import Order, RecoveryPlan
+from app.db.models import Incident, Location, Order, RecoveryPlan, Vehicle
 from app.db.models.planning import ValidationStatus
 from app.db.models.recovery import RecoveryPlanStatus, ReplanningScope, SolverStatus
 from app.db.models.resources import OrderExecutionStatus, OrderRiskStatus
@@ -68,6 +69,24 @@ def test_incident_list_filters_and_detail_summarizes_source_impact_and_attempts(
         assert item["impact_summary"] == {"COMPLETED_FROZEN": 1, "HANDOVER_REQUIRED": 1}
         assert [attempt["attempt_no"] for attempt in item["recovery_attempts"]] == [1]
         assert item["recovery_attempts"][0]["candidate_delivery_plan_id"] == CANDIDATE_PLAN
+
+def test_vehicle_incident_detail_returns_historical_location_not_live_vehicle_location():
+    with api_client() as (client, session):
+        incident = session.scalar(select(Incident).where(Incident.incident_location_id.is_not(None)).limit(1))
+        assert incident is not None
+        location = incident.incident_location
+        other_location = session.scalar(select(Location).where(Location.id != location.id).limit(1))
+        vehicle = session.get(Vehicle, incident.vehicle_id)
+        assert other_location is not None and vehicle is not None
+        vehicle.current_location_id = other_location.id
+        session.flush()
+        response = client.get(f"/api/incidents/{incident.id}")
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["incident_location"] == {
+            "latitude": float(location.latitude),
+            "longitude": float(location.longitude),
+            "address_text": location.address_text,
+        }
 
 
 def test_affected_orders_remain_detection_snapshots_after_current_order_changes():

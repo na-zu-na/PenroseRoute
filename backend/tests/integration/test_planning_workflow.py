@@ -29,6 +29,8 @@ from app.db.models.planning import (
     PlanOrderAssignmentStatus,
     ValidationStatus,
 )
+from app.core.errors import IntegrationError
+from app.integrations.routing.provider import DeterministicRoutingProvider
 from app.db.session import engine
 from app.main import app
 
@@ -184,6 +186,31 @@ def test_generate_plan_includes_pair_starting_after_first_pickup_ready_time() ->
 
             assert response.status_code == 201, response.text
             assert response.json()["data"]["summary"]["assigned_orders"] == 1
+
+        asyncio.run(scenario())
+
+
+def test_road_route_failure_does_not_create_a_plan(monkeypatch) -> None:
+    from app.modules.planning import workflow as planning_workflow
+
+    with planning_client() as (client, session):
+        business_date = seed_planning_facts(session)
+
+        class FailingRoadProvider:
+            def build_matrix(self, locations):
+                return DeterministicRoutingProvider().build_matrix(locations)
+
+            def build_route(self, waypoints):
+                assert not session.in_transaction()
+                raise IntegrationError(code="ROAD_ROUTING_INVALID_RESPONSE", message="NoRoute")
+
+        monkeypatch.setattr(planning_workflow, "get_routing_provider", lambda: FailingRoadProvider())
+
+        async def scenario() -> None:
+            response = await client.post("/api/planning/generate", json={"business_date": str(business_date)})
+            assert response.status_code == 500, response.text
+            assert response.json()["code"] == "ROAD_ROUTING_INVALID_RESPONSE"
+            assert session.scalar(select(DeliveryPlan).where(DeliveryPlan.business_date == business_date)) is None
 
         asyncio.run(scenario())
 

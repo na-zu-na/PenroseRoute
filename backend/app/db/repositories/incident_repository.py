@@ -52,6 +52,7 @@ class IncidentRepository:
         return self.session.scalar(
             select(Incident).where(Incident.id == incident_id).options(
                 joinedload(Incident.delivery_plan),
+                joinedload(Incident.incident_location),
                 selectinload(Incident.affected_orders),
                 selectinload(Incident.recovery_plans),
             )

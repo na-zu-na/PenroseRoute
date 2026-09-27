@@ -349,6 +349,11 @@ def materialize_recovery_context(
             longitude=float(Decimal(location.longitude)),
         )
 
+    for route in plan.routes:
+        add_location(route.start_location)
+        add_location(route.end_location)
+        for stop in route.stops:
+            add_location(stop.location)
     for item in ordered_memberships:
         if item.order_id in target_ids:
             add_location(item.order.pickup_location)

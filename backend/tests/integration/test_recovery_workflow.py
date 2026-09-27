@@ -1,11 +1,12 @@
 import asyncio
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.api.auth import Principal
@@ -33,6 +34,9 @@ from app.modules.recovery.deterministic_context import materialize_recovery_cont
 from app.modules.recovery.deterministic_orchestration import build_recovery_solver_input
 from app.db.models.recovery import ReplanningScope
 from app.integrations.routing.distance_matrix import build_distance_time_matrix
+from app.integrations.routing.osrm import RoadRoute
+from app.integrations.routing.provider import DeterministicRoutingProvider
+from app.core.errors import IntegrationError
 
 
 BUSINESS_DATE = "2026-09-25"
@@ -101,6 +105,114 @@ def prepare_route(session: Session) -> None:
         order.execution_status = execution
         order.risk_status = risk
     session.commit()
+
+
+@pytest.fixture(autouse=True)
+def isolated_recovery_seed(monkeypatch, p1_bootstrap_database_url):
+    temporary_engine = create_engine(p1_bootstrap_database_url)
+    monkeypatch.setattr(sys.modules[__name__], "engine", temporary_engine)
+    try:
+        yield
+    finally:
+        temporary_engine.dispose()
+
+
+def test_recovery_candidate_routes_have_geometry_for_final_stop_order(
+    monkeypatch,
+) -> None:
+    from app.integrations.routing import distance_matrix
+    from app.modules.recovery import deterministic_workflow
+
+    with recovery_client() as (client, session):
+        prepare_route(session)
+        requested = []
+        matrix_calls = []
+
+        class RoadProvider:
+            def build_matrix(self, locations):
+                assert not session.in_transaction()
+                matrix_calls.append(tuple(locations))
+                return DeterministicRoutingProvider().build_matrix(locations)
+
+            def build_route(self, waypoints):
+                assert not session.in_transaction()
+                requested.append(tuple(item.location_id for item in waypoints))
+                coordinates = [[waypoints[0].longitude, waypoints[0].latitude]]
+                ends = []
+                for origin, destination in zip(waypoints, waypoints[1:]):
+                    coordinates.extend([
+                        [(origin.longitude + destination.longitude) / 2,
+                         (origin.latitude + destination.latitude) / 2 + 0.0002],
+                        [destination.longitude, destination.latitude],
+                    ])
+                    ends.append(len(coordinates) - 1)
+                return RoadRoute({"type": "LineString", "coordinates": coordinates}, tuple(ends), 500, 60)
+
+        provider = RoadProvider()
+        monkeypatch.setattr(distance_matrix, "get_routing_provider", lambda: provider)
+        monkeypatch.setattr(deterministic_workflow, "get_routing_provider", lambda: provider)
+
+        async def scenario():
+            incident_id = await create_incident(client)
+            response = await client.post(f"/api/incidents/{incident_id}/recovery", json={})
+            return incident_id, response
+
+        incident_id, response = asyncio.run(scenario())
+        assert response.status_code == 201, response.text
+        candidate_id = response.json()["data"]["candidate_delivery_plan_id"]
+        session.expire_all()
+        routes = session.scalars(select(VehicleRoute).where(VehicleRoute.delivery_plan_id == candidate_id)).all()
+        assert routes
+        assert any(str(route.vehicle_id) == "50000000-0000-0000-0000-000000000003" for route in routes)
+        assert any(stop.status is StopStatus.COMPLETED for route in routes for stop in route.stops)
+        assert matrix_calls
+        assert len(requested) == len(routes)
+        for route in routes:
+            ordered_stops = sorted(route.stops, key=lambda item: item.sequence_no)
+            expected = (route.start_location_id, *(stop.location_id for stop in ordered_stops))
+            if route.end_location_id != ordered_stops[-1].location_id:
+                expected = (*expected, route.end_location_id)
+            assert expected in requested
+            assert route.route_geometry["type"] == "LineString"
+            assert route.route_metrics["geometry_provider"] == "OSRM"
+            assert len(route.route_metrics["road_leg_end_indices"]) == len(expected) - 1
+        assert session.scalar(select(RecoveryPlan).where(RecoveryPlan.incident_id == incident_id,
+                                                         RecoveryPlan.candidate_delivery_plan_id == candidate_id)) is not None
+
+
+def test_recovery_route_failure_keeps_attempt_without_candidate(
+    monkeypatch,
+) -> None:
+    from app.integrations.routing import distance_matrix
+    from app.modules.recovery import deterministic_workflow
+
+    with recovery_client() as (client, session):
+        prepare_route(session)
+
+        class FailingRoadProvider:
+            def build_matrix(self, locations):
+                return DeterministicRoutingProvider().build_matrix(locations)
+
+            def build_route(self, waypoints):
+                assert not session.in_transaction()
+                raise IntegrationError(code="ROAD_ROUTING_NO_ROUTE", message="NoRoute")
+
+        provider = FailingRoadProvider()
+        monkeypatch.setattr(distance_matrix, "get_routing_provider", lambda: provider)
+        monkeypatch.setattr(deterministic_workflow, "get_routing_provider", lambda: provider)
+
+        async def scenario():
+            incident_id = await create_incident(client)
+            response = await client.post(f"/api/incidents/{incident_id}/recovery", json={})
+            return incident_id, response
+
+        incident_id, response = asyncio.run(scenario())
+        assert response.status_code == 500, response.text
+        assert response.json()["code"] == "RECOVERY_ROAD_ROUTING_FAILED"
+        session.expire_all()
+        attempts = session.scalars(select(RecoveryPlan).where(RecoveryPlan.incident_id == incident_id)).all()
+        assert attempts[-1].candidate_delivery_plan_id is None
+        assert attempts[-1].solver_validation_summary["failure_stage"] == "road_geometry"
 
 
 async def create_incident(client: httpx.AsyncClient) -> str:

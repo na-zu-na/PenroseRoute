@@ -964,6 +964,91 @@ INSERT INTO risk_alert_changes (
     '{"reason_category":"APPROACHING_WINDOW","estimated_arrival_at":"2026-09-25T11:15:00+08:00","delivery_window_end_at":"2026-09-25T11:30:00+08:00","delay_seconds":3000,"threshold_seconds":900,"vehicle_route_id":"90000000-0000-0000-0000-000000000002"}'::jsonb
 );
 
+-- 16. ADDITIONAL DEMO RESOURCES AND ORDERS
+-- Keep the original 3 vehicles, 3 drivers and 6 orders unchanged.
+-- Of the 74 extra orders, keep 7-12 on September 25 and put 13-80 on
+-- September 27. The September 27 plan is only a draft: no solver result,
+-- plan memberships, routes or stops have been generated yet.
+INSERT INTO vehicles (
+    id, vehicle_code, name, capacity_load_units,
+    status, current_location_id, current_location_recorded_at
+)
+SELECT
+    ('50000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+    'VEH-' || lpad(n::text, 3, '0'),
+    'Van ' || lpad(n::text, 3, '0'),
+    4 + (n % 3),
+    'AVAILABLE',
+    '10000000-0000-0000-0000-000000000001'::uuid,
+    '2026-09-27 08:00:00+08'::timestamptz
+FROM generate_series(4, 50) AS extra(n);
+
+INSERT INTO drivers (id, driver_code, name, status)
+SELECT
+    ('60000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+    'DRV-' || lpad(n::text, 3, '0'),
+    'Driver ' || lpad(n::text, 3, '0'),
+    'AVAILABLE'
+FROM generate_series(4, 50) AS extra(n);
+
+INSERT INTO vehicle_driver_assignments (
+    id, vehicle_id, driver_id, assigned_from_at, assigned_until_at, status
+)
+SELECT
+    ('70000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+    ('50000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+    ('60000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+    '2026-09-27 08:00:00+08'::timestamptz,
+    '2026-09-27 18:00:00+08'::timestamptz,
+    'PLANNED'
+FROM generate_series(4, 50) AS extra(n);
+
+INSERT INTO orders (
+    id, order_code, business_date,
+    merchant_id, customer_id, pickup_location_id, delivery_location_id,
+    pickup_ready_at, pickup_service_seconds,
+    delivery_window_start_at, delivery_window_end_at,
+    delivery_service_seconds, demand_load_units, execution_status, risk_status
+)
+SELECT
+    ('40000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+    'ORD-' || to_char(DATE '2026-09-25' + day_shift.days, 'YYYYMMDD')
+        || '-' || lpad(n::text, 3, '0'),
+    DATE '2026-09-25' + day_shift.days,
+    ('20000000-0000-0000-0000-' || lpad((1 + n % 2)::text, 12, '0'))::uuid,
+    ('30000000-0000-0000-0000-' || lpad((1 + (n - 1) % 4)::text, 12, '0'))::uuid,
+    ('10000000-0000-0000-0000-' || lpad((2 + n % 2)::text, 12, '0'))::uuid,
+    ('10000000-0000-0000-0000-' || lpad((4 + (n - 1) % 4)::text, 12, '0'))::uuid,
+    '2026-09-25 09:30:00+08'::timestamptz
+        + day_shift.days * INTERVAL '1 day'
+        + (n % 4) * INTERVAL '10 minutes',
+    300,
+    '2026-09-25 10:30:00+08'::timestamptz
+        + day_shift.days * INTERVAL '1 day'
+        + (n % 6) * INTERVAL '15 minutes',
+    '2026-09-25 15:30:00+08'::timestamptz
+        + day_shift.days * INTERVAL '1 day'
+        + (n % 6) * INTERVAL '15 minutes',
+    300,
+    1 + (n % 2),
+    'PLANNED',
+    'NORMAL'
+FROM generate_series(7, 80) AS extra(n)
+CROSS JOIN LATERAL (VALUES (CASE WHEN n <= 12 THEN 0 ELSE 2 END))
+    AS day_shift(days);
+
+INSERT INTO delivery_plans (
+    id, plan_code, plan_group_id, business_date, version_no, status, created_by
+) VALUES (
+    '80000000-0000-0000-0000-000000000003',
+    'PLAN-20260927-DRAFT',
+    '8f000000-0000-0000-0000-000000000002',
+    DATE '2026-09-27',
+    1,
+    'DRAFT',
+    'seed_demo'
+);
+
 COMMIT;
 
 -- ============================================================

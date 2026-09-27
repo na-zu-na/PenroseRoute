@@ -84,6 +84,11 @@ class PlanRepository:
                 selectinload(DeliveryPlan.routes)
                 .selectinload(VehicleRoute.stops)
                 .joinedload(RouteStop.order),
+                selectinload(DeliveryPlan.routes)
+                .selectinload(VehicleRoute.stops)
+                .joinedload(RouteStop.location),
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.start_location),
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.end_location),
                 selectinload(DeliveryPlan.incidents).selectinload(
                     Incident.recovery_plans
                 ),
@@ -222,6 +227,23 @@ class PlanRepository:
             .where(DeliveryPlan.id == plan_id)
             .with_for_update()
             .execution_options(populate_existing=True)
+        )
+        return self.session.scalar(statement)
+
+    def get_plan_for_operations_workspace(self, plan_id: UUID) -> DeliveryPlan | None:
+        statement = (
+            select(DeliveryPlan)
+            .where(DeliveryPlan.id == plan_id)
+            .options(
+                selectinload(DeliveryPlan.plan_orders).joinedload(DeliveryPlanOrder.order),
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.vehicle),
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.driver),
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.start_location),
+                selectinload(DeliveryPlan.routes).joinedload(VehicleRoute.end_location),
+                selectinload(DeliveryPlan.routes).selectinload(VehicleRoute.stops).joinedload(RouteStop.order),
+                selectinload(DeliveryPlan.routes).selectinload(VehicleRoute.stops).joinedload(RouteStop.location),
+                selectinload(DeliveryPlan.incidents),
+            )
         )
         return self.session.scalar(statement)
 

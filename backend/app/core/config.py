@@ -6,6 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    routing_provider: Literal["deterministic", "osrm"] = "deterministic"
+    osrm_base_url: str | None = "http://localhost:5000"
+    osrm_timeout_seconds: float = Field(default=8, gt=0)
     dispatch_intent_provider: Literal["rules", "bedrock", "ark"] = "ark"
     dispatch_api_tokens: SecretStr | None = None
     dispatch_context_secret: SecretStr | None = None

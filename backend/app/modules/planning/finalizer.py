@@ -18,6 +18,7 @@ from app.integrations.optimization.contracts import (
     SolverStatus,
     SolverStopType,
 )
+from app.integrations.routing.osrm import RoadRoute
 from app.modules.planning.input_builder import PlanningFacts
 
 
@@ -30,10 +31,13 @@ class PlanFinalizer:
         facts: PlanningFacts,
         result: SolverResult,
         *,
-        activated_at: datetime,
+        activated_at: datetime | None,
+        road_routes: dict[UUID, RoadRoute] | None = None,
     ) -> DeliveryPlan:
         if result.status is not SolverStatus.FEASIBLE:
             raise ValueError("only a feasible solver result can be finalized")
+        if road_routes is not None and set(road_routes) != {route.vehicle_id for route in result.routes}:
+            raise ValueError("road geometry must cover every planned route")
 
         previous = self.repository.get_latest_plan_for_business_date(
             facts.business_date
@@ -46,7 +50,7 @@ class PlanFinalizer:
             business_date=facts.business_date,
             version_no=version_no,
             parent_plan_id=previous.id if previous is not None else None,
-            status=DeliveryPlanStatus.CURRENT,
+            status=DeliveryPlanStatus.CURRENT if activated_at else DeliveryPlanStatus.DRAFT,
             solver_engine="OR_TOOLS",
             validation_status=ValidationStatus.VALID,
             total_distance_meters=result.total_distance_meters,
@@ -68,6 +72,7 @@ class PlanFinalizer:
         route_by_order_id: dict[UUID, UUID] = {}
         for route_no, solver_route in enumerate(result.routes, start=1):
             pair = pairs[solver_route.vehicle_id]
+            road = road_routes[solver_route.vehicle_id] if road_routes is not None else None
             route_id = uuid4()
             route = VehicleRoute(
                 id=route_id,
@@ -86,8 +91,12 @@ class PlanFinalizer:
                 distance_meters=solver_route.distance_meters,
                 duration_seconds=solver_route.duration_seconds,
                 vehicle_capacity_load_units_snapshot=pair.capacity_load_units,
-                route_geometry=None,
-                route_metrics={"stop_count": len(solver_route.stops)},
+                route_geometry=road.geometry if road is not None else None,
+                route_metrics={
+                    "stop_count": len(solver_route.stops),
+                    **({"geometry_provider": "OSRM", "road_leg_end_indices": list(road.leg_end_indices)}
+                       if road is not None else {}),
+                },
             )
             self.repository.add_vehicle_route(route)
 

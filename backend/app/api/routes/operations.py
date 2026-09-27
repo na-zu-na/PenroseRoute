@@ -15,6 +15,7 @@ from app.db.models.resources import OrderExecutionStatus, OrderRiskStatus
 from app.db.repositories.plan_repository import PlanRepository
 from app.modules.operations.queries import OperationsQueryService
 from app.modules.operations.simulation import simulated_positions
+from app.modules.operations.workspace import OperationsWorkspaceService
 from app.schemas.common import ApiResponse, PaginatedData, PaginationParams
 from app.schemas.operations import (
     OperationOrderResponse,
@@ -26,6 +27,19 @@ from app.schemas.operations import (
 
 
 router = APIRouter(prefix="/operations", tags=["operations"])
+
+
+@router.get("/workspace")
+def get_operations_workspace(
+    business_date: date,
+    request_id: Annotated[str, Depends(get_request_id)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ApiResponse[dict]:
+    return success_response(
+        data=OperationsWorkspaceService(db).snapshot(business_date),
+        message="Operations workspace retrieved",
+        request_id=request_id,
+    )
 
 
 @router.get("/simulated-positions")

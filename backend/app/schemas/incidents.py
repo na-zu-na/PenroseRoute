@@ -85,6 +85,7 @@ class IncidentListItemResponse(BaseModel):
 class IncidentDetailResponse(IncidentListItemResponse):
     base_plan_code: str
     incident_location_id: UUID | None
+    incident_location: BreakdownLocationResponse | None
     original_ready_at: datetime | None
     updated_ready_at: datetime | None
     delay_seconds: int | None

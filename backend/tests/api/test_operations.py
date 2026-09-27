@@ -441,6 +441,40 @@ def test_simulated_positions_are_read_only_and_scoped_to_current_plan() -> None:
         assert vehicle.current_location_recorded_at == original_recorded_at
 
 
+def test_simulated_positions_and_workspace_share_verified_road_path() -> None:
+    with operations_client() as (client, session):
+        ids = seed_current_operation(session)
+        route = session.get(VehicleRoute, ids["route_id"])
+        coordinates = [
+            [103.80, 1.30], [103.80, 1.31], [103.81, 1.31],
+            [103.81, 1.32], [103.82, 1.32],
+        ]
+        route.route_geometry = {"type": "LineString", "coordinates": coordinates}
+        route.route_metrics = {"geometry_provider": "OSRM", "road_leg_end_indices": [2, 4]}
+        session.commit()
+
+        async def scenario() -> None:
+            params = {"business_date": str(ids["business_date"])}
+            workspace = await client.get("/api/operations/workspace", params=params)
+            positions = await client.get("/api/operations/simulated-positions", params=params)
+            assert workspace.status_code == 200, workspace.text
+            assert positions.status_code == 200, positions.text
+            workspace_path = workspace.json()["data"]["routes"][0]["path"]
+            vehicle = positions.json()["data"]["vehicles"][0]
+            assert workspace_path == vehicle["path"] == coordinates
+            assert vehicle["source"] == "SIMULATED"
+            longitude, latitude = vehicle["longitude"], vehicle["latitude"]
+            assert any(
+                (min(a[0], b[0]) - 1e-8 <= longitude <= max(a[0], b[0]) + 1e-8
+                 and min(a[1], b[1]) - 1e-8 <= latitude <= max(a[1], b[1]) + 1e-8
+                 and abs((b[0] - a[0]) * (latitude - a[1]) -
+                         (b[1] - a[1]) * (longitude - a[0])) < 1e-8)
+                for a, b in zip(coordinates, coordinates[1:])
+            )
+
+        asyncio.run(scenario())
+
+
 def test_simulated_positions_allows_local_frontend_preflight() -> None:
     async def scenario() -> None:
         async with httpx.AsyncClient(

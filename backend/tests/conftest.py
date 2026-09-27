@@ -1,7 +1,11 @@
 """Disposable PostgreSQL database for P1 migration tests."""
 
+import os
 from pathlib import Path
 from uuid import uuid4
+
+# Local .env may use OSRM, but isolated tests keep deterministic routing unless explicitly overridden.
+os.environ.setdefault("ROUTING_PROVIDER", "deterministic")
 
 import psycopg
 from psycopg import sql

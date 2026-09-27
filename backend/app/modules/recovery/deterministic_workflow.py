@@ -37,6 +37,8 @@ from app.integrations.optimization.contracts import (
     SolverStatus,
     SolverStopType,
 )
+from app.integrations.routing.distance_matrix import get_routing_provider
+from app.integrations.routing.osrm import RoadRoute
 from app.modules.incidents.scope import (
     initial_merchant_delay_scope,
     initial_vehicle_unavailable_scope,
@@ -53,6 +55,15 @@ from app.modules.planning.comparison import compare_plan_snapshots
 
 
 logger = logging.getLogger(__name__)
+
+
+def _preserved_stops(base_route: RouteSnapshot, target_ids: set[UUID], rebuilt_ids: set[UUID]) -> tuple[StopSnapshot, ...]:
+    if base_route.id not in rebuilt_ids:
+        return base_route.stops
+    return tuple(
+        stop for stop in base_route.stops
+        if stop.order_id not in target_ids or stop.status == StopStatus.COMPLETED.value
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +291,26 @@ class RecoveryWorkflow:
                     data={**self._view_data(failed), "manual_intervention_required": True},
                 )
 
+            try:
+                road_routes = self._build_candidate_road_routes(context, result)
+            except IntegrationError as error:
+                with self.session.begin():
+                    locked = self._lock_attempt(attempt.id)
+                    locked.solver_status = RecoverySolverStatus.FEASIBLE
+                    locked.validation_status = ValidationStatus.INVALID
+                    locked.solver_validation_summary = {
+                        "failure_stage": "road_geometry",
+                        "diagnostic": error.message,
+                        "routing_code": error.code,
+                    }
+                    self.recoveries.flush()
+                    failed = self._view(locked)
+                raise IntegrationError(
+                    code="RECOVERY_ROAD_ROUTING_FAILED",
+                    message="Recovery route geometry could not be generated",
+                    data={**self._view_data(failed), "manual_intervention_required": True},
+                ) from error
+
             with self.session.begin():
                 self._assert_base_still_current(incident_id, context.base_plan_id)
                 self.plans.lock_recovery_execution_facts(
@@ -310,7 +341,7 @@ class RecoveryWorkflow:
                         ),
                     )
                 locked = self._lock_attempt(attempt.id)
-                candidate = self._create_candidate(context, result)
+                candidate = self._create_candidate(context, result, road_routes)
                 if self.mode == "agent":
                     from app.modules.recovery.evidence import (
                         evidence_from_plan_comparison,
@@ -482,8 +513,54 @@ class RecoveryWorkflow:
             )
         return attempt
 
+    @staticmethod
+    def _build_candidate_road_routes(
+        context: RecoveryContext, result: SolverResult
+    ) -> dict[UUID, RoadRoute] | None:
+        provider = get_routing_provider()
+        build_route = getattr(provider, "build_route", None)
+        if build_route is None:
+            return None
+        locations = {item.location_id: item for item in context.locations}
+        vehicle_facts = {item.vehicle_id: item for item in context.vehicles}
+        solver_routes = {item.vehicle_id: item for item in result.routes}
+        target_ids = {item.order_id for item in context.target_orders}
+        rebuilt_ids = {item.original_route_id for item in context.target_orders if item.original_route_id is not None}
+        road_routes: dict[UUID, RoadRoute] = {}
+
+        def route_for(vehicle_id: UUID, start_id: UUID, stop_ids: tuple[UUID, ...]) -> None:
+            try:
+                waypoints = (locations[start_id], *(locations[stop_id] for stop_id in stop_ids))
+            except KeyError as error:
+                raise IntegrationError(code="ROAD_ROUTING_INVALID_INPUT", message="Recovery route location is missing") from error
+            road_routes[vehicle_id] = build_route(waypoints)
+
+        for base_route in context.routes:
+            solver_route = solver_routes.pop(base_route.vehicle_id, None)
+            preserved = _preserved_stops(base_route, target_ids, rebuilt_ids)
+            if not preserved and solver_route is None:
+                continue
+            unchanged_road = (
+                base_route.id not in rebuilt_ids and solver_route is None
+                and (base_route.route_metrics or {}).get("geometry_provider") == "OSRM"
+                and base_route.route_geometry is not None
+            )
+            if not unchanged_road:
+                candidate_stops = (*preserved, *(solver_route.stops if solver_route is not None else ()))
+                stop_ids = tuple(stop.location_id for stop in candidate_stops)
+                if (solver_route is None and base_route.id not in rebuilt_ids
+                        and base_route.end_location_id != candidate_stops[-1].location_id):
+                    stop_ids = (*stop_ids, base_route.end_location_id)
+                route_for(base_route.vehicle_id, base_route.start_location_id, stop_ids)
+
+        for solver_route in solver_routes.values():
+            route_for(solver_route.vehicle_id, vehicle_facts[solver_route.vehicle_id].start_location_id,
+                      tuple(stop.location_id for stop in solver_route.stops))
+        return road_routes
+
     def _create_candidate(
-        self, context: RecoveryContext, result: SolverResult
+        self, context: RecoveryContext, result: SolverResult,
+        road_routes: dict[UUID, RoadRoute] | None = None,
     ) -> DeliveryPlan:
         self.plans.lock_business_date_for_planning(context.business_date)
         latest = self.plans.get_latest_plan_for_business_date(context.business_date)
@@ -513,7 +590,7 @@ class RecoveryWorkflow:
         self.plans.add_delivery_plan(plan)
         self.plans.flush()
 
-        route_by_order = self._persist_candidate_routes(plan, context, result)
+        route_by_order = self._persist_candidate_routes(plan, context, result, road_routes)
         unassigned_by_order = {
             item.order_id: item for item in result.unassigned_orders
         }
@@ -571,6 +648,7 @@ class RecoveryWorkflow:
         plan: DeliveryPlan,
         context: RecoveryContext,
         result: SolverResult,
+        road_routes: dict[UUID, RoadRoute] | None = None,
     ) -> dict[UUID, UUID]:
         solver_routes = {item.vehicle_id: item for item in result.routes}
         target_ids = {item.order_id for item in context.target_orders}
@@ -585,25 +663,26 @@ class RecoveryWorkflow:
 
         for base_route in context.routes:
             solver_route = solver_routes.pop(base_route.vehicle_id, None)
-            preserved = (
-                base_route.stops
-                if base_route.id not in rebuilt_route_ids
-                else tuple(
-                    stop
-                    for stop in base_route.stops
-                    if stop.order_id not in target_ids
-                    or stop.status == StopStatus.COMPLETED.value
-                )
-            )
+            preserved = _preserved_stops(base_route, target_ids, rebuilt_route_ids)
             if not preserved and solver_route is None:
                 continue
             route_no += 1
             route_id = uuid4()
             new_stops = solver_route.stops if solver_route is not None else ()
+            road = road_routes.get(base_route.vehicle_id) if road_routes is not None else None
+            unchanged = solver_route is None and base_route.id not in rebuilt_route_ids
+            previous_metrics = (base_route.route_metrics or {}) if unchanged else {}
+            road_metadata = (
+                {"geometry_provider": "OSRM", "road_leg_end_indices": list(road.leg_end_indices)}
+                if road is not None else {
+                    key: previous_metrics[key]
+                    for key in ("geometry_provider", "road_leg_end_indices")
+                    if key in previous_metrics
+                }
+            )
             end_location_id = (
-                new_stops[-1].location_id
-                if new_stops
-                else preserved[-1].location_id
+                base_route.end_location_id if unchanged else
+                new_stops[-1].location_id if new_stops else preserved[-1].location_id
             )
             route = VehicleRoute(
                 id=route_id,
@@ -649,13 +728,14 @@ class RecoveryWorkflow:
                     if base_route.vehicle_id in vehicle_facts
                     else base_route.capacity_load_units
                 ),
-                route_geometry=(
-                    None if solver_route is not None else base_route.route_geometry
+                route_geometry=road.geometry if road is not None else (
+                    base_route.route_geometry if unchanged else None
                 ),
                 route_metrics={
                     "recovery_scope": context.scope.value,
                     "preserved_stop_count": len(preserved),
                     "replanned_stop_count": len(new_stops),
+                    **road_metadata,
                 },
             )
             self.plans.add_vehicle_route(route)
@@ -669,6 +749,7 @@ class RecoveryWorkflow:
 
         for solver_route in solver_routes.values():
             pair = vehicle_facts[solver_route.vehicle_id]
+            road = road_routes.get(solver_route.vehicle_id) if road_routes is not None else None
             route_no += 1
             route_id = uuid4()
             route = VehicleRoute(
@@ -687,10 +768,13 @@ class RecoveryWorkflow:
                 distance_meters=solver_route.distance_meters,
                 duration_seconds=solver_route.duration_seconds,
                 vehicle_capacity_load_units_snapshot=pair.capacity_load_units,
+                route_geometry=road.geometry if road is not None else None,
                 route_metrics={
                     "recovery_scope": context.scope.value,
                     "preserved_stop_count": 0,
                     "replanned_stop_count": len(solver_route.stops),
+                    **({"geometry_provider": "OSRM", "road_leg_end_indices": list(road.leg_end_indices)}
+                       if road is not None else {}),
                 },
             )
             self.plans.add_vehicle_route(route)

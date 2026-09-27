@@ -11,3 +11,10 @@ __pycache__/
 .superpowers/
 .DS_Store
 /PenroseRoute/
+
+# Local OSRM service and OpenStreetMap data
+backend/tools/osrm/.venv/
+backend/tools/osrm/data/*.osm.pbf
+backend/tools/osrm/data/*.osm.pbf.part
+backend/tools/osrm/data/*.osrm
+backend/tools/osrm/data/*.osrm.*

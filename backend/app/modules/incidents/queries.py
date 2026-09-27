@@ -36,6 +36,7 @@ class IncidentQueryService:
             **self._base_view(incident),
             "base_plan_code": incident.delivery_plan.plan_code,
             "incident_location_id": incident.incident_location_id,
+            "incident_location": incident.incident_location,
             "original_ready_at": incident.original_ready_at,
             "updated_ready_at": incident.updated_ready_at,
             "delay_seconds": incident.delay_seconds,
