@@ -23,7 +23,7 @@ from app.db.models import (
     VehicleRoute,
 )
 from app.db.models.fleet import ResourceStatus
-from app.db.models.planning import DeliveryPlanStatus, StopStatus, StopType
+from app.db.models.planning import DeliveryPlanStatus, RouteStatus, StopStatus, StopType
 from app.db.models.recovery import IncidentType, RecoveryPlanStatus
 from app.db.models.resources import OrderExecutionStatus, OrderRiskStatus
 from app.db.session import engine
@@ -167,6 +167,9 @@ def test_recovery_candidate_routes_have_geometry_for_final_stop_order(
         assert any(stop.status is StopStatus.COMPLETED for route in routes for stop in route.stops)
         assert matrix_calls
         assert len(requested) == len(routes)
+        incident = session.get(Incident, incident_id)
+        broken_route = next(route for route in routes if route.vehicle_id == incident.vehicle_id)
+        assert broken_route.end_location_id == incident.incident_location_id
         for route in routes:
             ordered_stops = sorted(route.stops, key=lambda item: item.sequence_no)
             expected = (route.start_location_id, *(stop.location_id for stop in ordered_stops))
@@ -176,6 +179,9 @@ def test_recovery_candidate_routes_have_geometry_for_final_stop_order(
             assert route.route_geometry["type"] == "LineString"
             assert route.route_metrics["geometry_provider"] == "OSRM"
             assert len(route.route_metrics["road_leg_end_indices"]) == len(expected) - 1
+            assert route.distance_meters == 500
+            if route.route_metrics["replanned_stop_count"] or route.status is RouteStatus.COMPLETED:
+                assert route.duration_seconds == round((route.planned_end_at - route.planned_start_at).total_seconds())
         assert session.scalar(select(RecoveryPlan).where(RecoveryPlan.incident_id == incident_id,
                                                          RecoveryPlan.candidate_delivery_plan_id == candidate_id)) is not None
 

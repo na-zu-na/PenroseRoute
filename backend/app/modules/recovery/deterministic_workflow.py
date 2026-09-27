@@ -548,6 +548,11 @@ class RecoveryWorkflow:
             if not unchanged_road:
                 candidate_stops = (*preserved, *(solver_route.stops if solver_route is not None else ()))
                 stop_ids = tuple(stop.location_id for stop in candidate_stops)
+                if (context.incident_type == "VEHICLE_UNAVAILABLE"
+                        and base_route.id == context.affected_route_id
+                        and context.incident_location_id is not None
+                        and stop_ids[-1] != context.incident_location_id):
+                    stop_ids = (*stop_ids, context.incident_location_id)
                 if (solver_route is None and base_route.id not in rebuilt_ids
                         and base_route.end_location_id != candidate_stops[-1].location_id):
                     stop_ids = (*stop_ids, base_route.end_location_id)
@@ -682,7 +687,16 @@ class RecoveryWorkflow:
             )
             end_location_id = (
                 base_route.end_location_id if unchanged else
-                new_stops[-1].location_id if new_stops else preserved[-1].location_id
+                new_stops[-1].location_id if new_stops else
+                context.incident_location_id if (
+                    context.incident_type == "VEHICLE_UNAVAILABLE"
+                    and base_route.id == context.affected_route_id
+                    and context.incident_location_id is not None
+                ) else preserved[-1].location_id
+            )
+            planned_end_at = (
+                context.current_time + timedelta(seconds=new_stops[-1].departure_time_seconds)
+                if new_stops else context.current_time if not unchanged else base_route.planned_end_at
             )
             route = VehicleRoute(
                 id=route_id,
@@ -703,25 +717,21 @@ class RecoveryWorkflow:
                     )
                 ),
                 planned_start_at=base_route.planned_start_at,
-                planned_end_at=(
-                    context.current_time
-                    + timedelta(seconds=new_stops[-1].departure_time_seconds)
-                    if new_stops
-                    else base_route.planned_end_at
-                ),
+                planned_end_at=planned_end_at,
                 actual_start_at=base_route.actual_start_at,
                 actual_end_at=(
                     base_route.actual_end_at if solver_route is None else None
                 ),
                 distance_meters=(
-                    solver_route.distance_meters
-                    if solver_route is not None
-                    else base_route.distance_meters
+                    road.distance_meters if road is not None else (
+                        solver_route.distance_meters
+                        if solver_route is not None
+                        else base_route.distance_meters
+                    )
                 ),
                 duration_seconds=(
-                    solver_route.duration_seconds
-                    if solver_route is not None
-                    else base_route.duration_seconds
+                    base_route.duration_seconds if unchanged else
+                    round((planned_end_at - base_route.planned_start_at).total_seconds())
                 ),
                 vehicle_capacity_load_units_snapshot=(
                     vehicle_facts[base_route.vehicle_id].capacity_load_units
@@ -750,6 +760,7 @@ class RecoveryWorkflow:
         for solver_route in solver_routes.values():
             pair = vehicle_facts[solver_route.vehicle_id]
             road = road_routes.get(solver_route.vehicle_id) if road_routes is not None else None
+            planned_end_at = context.current_time + timedelta(seconds=solver_route.stops[-1].departure_time_seconds)
             route_no += 1
             route_id = uuid4()
             route = VehicleRoute(
@@ -763,10 +774,9 @@ class RecoveryWorkflow:
                 end_location_id=solver_route.stops[-1].location_id,
                 status=RouteStatus.PLANNED,
                 planned_start_at=pair.available_from,
-                planned_end_at=context.current_time
-                + timedelta(seconds=solver_route.stops[-1].departure_time_seconds),
-                distance_meters=solver_route.distance_meters,
-                duration_seconds=solver_route.duration_seconds,
+                planned_end_at=planned_end_at,
+                distance_meters=road.distance_meters if road is not None else solver_route.distance_meters,
+                duration_seconds=round((planned_end_at - pair.available_from).total_seconds()),
                 vehicle_capacity_load_units_snapshot=pair.capacity_load_units,
                 route_geometry=road.geometry if road is not None else None,
                 route_metrics={

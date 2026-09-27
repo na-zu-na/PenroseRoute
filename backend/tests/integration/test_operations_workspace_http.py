@@ -70,6 +70,8 @@ def test_osrm_draft_workspace_uses_ordered_road_geometry(monkeypatch) -> None:
             assert stored.routes[0].route_geometry['coordinates'] == route['path']
             assert stored.routes[0].route_metrics['geometry_provider'] == 'OSRM'
             assert stored.routes[0].route_metrics['road_leg_end_indices'] == [2, 4]
+            assert stored.routes[0].distance_meters == 600
+            assert stored.total_distance_meters == 600
 
         asyncio.run(scenario())
 

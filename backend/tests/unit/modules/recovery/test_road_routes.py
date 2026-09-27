@@ -21,6 +21,7 @@ def _context(*, verified: bool = False):
     )
     return SimpleNamespace(
         routes=(base_route,), target_orders=(), vehicles=(), locations=(start, stop, end),
+        incident_type="MERCHANT_DELAY", affected_route_id=None, incident_location_id=None,
     )
 
 

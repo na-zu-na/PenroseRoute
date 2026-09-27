@@ -53,7 +53,10 @@ class PlanFinalizer:
             status=DeliveryPlanStatus.CURRENT if activated_at else DeliveryPlanStatus.DRAFT,
             solver_engine="OR_TOOLS",
             validation_status=ValidationStatus.VALID,
-            total_distance_meters=result.total_distance_meters,
+            total_distance_meters=(
+                sum(road.distance_meters for road in road_routes.values())
+                if road_routes is not None else result.total_distance_meters
+            ),
             total_duration_seconds=result.total_duration_seconds,
             vehicle_count=len(result.routes),
             assigned_order_count=len(facts.orders) - len(result.unassigned_orders),
@@ -88,7 +91,7 @@ class PlanFinalizer:
                 + timedelta(seconds=max(0, int((pair.assigned_from_at - facts.current_time).total_seconds()))),
                 planned_end_at=facts.current_time
                 + timedelta(seconds=solver_route.stops[-1].departure_time_seconds),
-                distance_meters=solver_route.distance_meters,
+                distance_meters=road.distance_meters if road is not None else solver_route.distance_meters,
                 duration_seconds=solver_route.duration_seconds,
                 vehicle_capacity_load_units_snapshot=pair.capacity_load_units,
                 route_geometry=road.geometry if road is not None else None,
