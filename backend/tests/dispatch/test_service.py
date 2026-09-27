@@ -150,3 +150,32 @@ def test_bedrock_intent_schema_with_stub():
     assert result.actions == ("get_resource_availability",)
     schema = seen[0]["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"]
     assert set(schema["properties"]) == {"actions", "clarification"}
+
+@pytest.mark.parametrize('via_text', [False, True])
+def test_switching_incident_discards_inherited_recovery_context(setup, via_text):
+    service, queries = setup
+    token = service.codec.encode(DispatchContext(incident_id=queries.incident,
+        recovery_plan_id=queries.recovery, base_plan_id=queries.base,
+        candidate_plan_id=queries.candidate), 'alice')
+    new_incident = uuid4()
+    result = service.run(DispatchCommand(
+        message=f'异常 {new_incident} 查看恢复方案' if via_text else '查看恢复方案',
+        context=DispatchContext() if via_text else DispatchContext(incident_id=new_incident),
+        context_token=token), 'alice')
+    assert result.status == 'NEEDS_INPUT'
+    assert not result.observations and not queries.calls
+    assert result.context.incident_id == new_incident
+    assert result.context.recovery_plan_id is None
+    assert result.context.base_plan_id is None
+    assert result.context.candidate_plan_id is None
+
+
+def test_switching_incident_keeps_explicit_new_recovery(setup):
+    service, queries = setup
+    token = service.codec.encode(DispatchContext(incident_id=uuid4(),
+        recovery_plan_id=uuid4(), base_plan_id=uuid4(), candidate_plan_id=uuid4()), 'alice')
+    result = service.run(DispatchCommand(message='查看恢复方案', context_token=token,
+        context=DispatchContext(incident_id=queries.incident, recovery_plan_id=queries.recovery)), 'alice')
+    assert result.status == 'COMPLETED'
+    assert result.context.recovery_plan_id == queries.recovery
+    assert result.context.base_plan_id is None and result.context.candidate_plan_id is None

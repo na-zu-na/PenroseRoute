@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.api.auth import Principal, authenticate_dispatch_user
@@ -13,7 +13,7 @@ from app.core.errors import AuthenticationError
 from app.core.responses import success_response
 from app.modules.recovery.deterministic_workflow import RecoveryWorkflow
 from app.schemas.common import ApiResponse
-from app.schemas.recovery import StartRecoveryRequest, StartRecoveryResponse
+from app.schemas.recovery import StartRecoveryRequest, StartRecoveryResponse, RecoveryOptionsResponse
 
 
 router = APIRouter(prefix="/incidents", tags=["recovery"])
@@ -99,3 +99,30 @@ def build_recovery_router(
                 "data": None, "request_id": request_id})
 
     return legacy_router
+
+
+class RecoveryOptionsCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_candidates: int = Field(default=3, ge=1, le=3, strict=True)
+    regenerate: bool = False
+
+
+@router.post("/{incident_id}/recovery-options", status_code=201,
+             dependencies=[Depends(require_operations_user)],
+             response_model=ApiResponse[RecoveryOptionsResponse])
+def generate_recovery_options(incident_id: UUID, command: RecoveryOptionsCommand,
+                              db: Annotated[Session, Depends(get_db)],
+                              request_id: Annotated[str, Depends(get_request_id)]):
+    from app.modules.recovery.options import RecoveryOptionsWorkflow
+    result = RecoveryOptionsWorkflow(db, max_candidates=command.max_candidates).start(
+        incident_id, request_id=request_id, regenerate=command.regenerate)
+    return success_response(data=result, code=result['outcome'],
+                            message="Recovery alternatives evaluated", request_id=request_id)
+
+
+@router.get("/{incident_id}/recovery-options", response_model=ApiResponse[RecoveryOptionsResponse])
+def get_recovery_options(incident_id: UUID, db: Annotated[Session, Depends(get_db)],
+                         request_id: Annotated[str, Depends(get_request_id)]):
+    from app.modules.recovery.option_queries import list_options
+    return success_response(data=list_options(db, incident_id),
+                            message="Ranked recovery alternatives retrieved", request_id=request_id)
