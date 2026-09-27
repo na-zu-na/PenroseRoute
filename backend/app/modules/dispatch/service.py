@@ -43,7 +43,7 @@ class DispatchService:
                     raise ValueError("duplicate actions")
                 source = "model"
                 if plan.clarification:
-                    plan = IntentPlan(clarification="请明确查询对象及日期或 ID。")
+                    plan = IntentPlan(clarification="Specify what to query and provide a delivery date or ID.")
             except Exception:
                 plan, source = rules, "fallback"
         observations = []
@@ -56,18 +56,23 @@ class DispatchService:
                 observations.append(ToolObservation(tool=action, success=True, code="SUCCESS", data=data))
             except (RecoveryError, BusinessError) as exc:
                 observations.append(ToolObservation(tool=action, success=False, code=exc.code))
-                return self._reply("FAILED", str(exc), context, observations, source, subject)
+                message = (
+                    "I couldn't find a matching alert for that delivery date. Please check the selected order or alert."
+                    if exc.code == "ALERT_NOT_FOUND"
+                    else "I couldn't retrieve that information. Please check the delivery date and your selection."
+                )
+                return self._reply("FAILED", message, context, observations, source, subject)
             except Exception:
                 logger.exception("Read-only dispatch capability failed: %s", action)
                 observations.append(ToolObservation(tool=action, success=False, code="DISPATCH_TOOL_FAILED"))
-                return self._reply("FAILED", "查询暂不可用，请稍后重试。", context, observations, source, subject)
+                return self._reply("FAILED", "The query is temporarily unavailable. Please try again.", context, observations, source, subject)
         if not observations:
-            return self._reply("NEEDS_INPUT", plan.clarification or "请提供查询对象。", context, [], source, subject)
+            return self._reply("NEEDS_INPUT", plan.clarification or "Specify what you would like to query.", context, [], source, subject)
         # All query sessions have closed before this optional model call.
         facts = tuple(ExplanationFact(id=f"{obs.tool}:{f['id']}", text=f["text"])
                       for obs in observations for f in obs.data.get("facts", ()))
         arranged, explanation_source, diagnostics = arrange_facts(facts, self.explanation_client) if facts else ((), "template", ())
-        message = "\n".join(f.text for f in arranged) or "查询完成；请查看结构化结果。"
+        message = " ".join(f.text for f in arranged) or "I couldn't find anything to summarize yet."
         return self._reply("COMPLETED", message, context, observations, source, subject,
                            explanation_source=explanation_source, diagnostics=diagnostics)
 
@@ -82,13 +87,13 @@ class DispatchService:
             return self.queries.compare(context.recovery_plan_id)
         if action == "explain_risk_alert":
             return self.queries.explain_alert(context.business_date, context.order_id, context.alert_id)
-        raise RecoveryError("DISPATCH_TOOL_FORBIDDEN", "未知只读能力", 422)
+        raise RecoveryError("DISPATCH_TOOL_FORBIDDEN", "Unknown read-only capability", 422)
 
     def _extract_context(self, text, context, explicit=None):
         values = {}
         dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", text)
         if len(set(dates)) > 1:
-            raise RecoveryError("DISPATCH_DATE_AMBIGUOUS", "一次请求请选择一个配送日期", 422)
+            raise RecoveryError("DISPATCH_DATE_AMBIGUOUS", "Select one delivery date per request", 422)
         try:
             if dates:
                 values["business_date"] = datetime.strptime(dates[0], "%Y-%m-%d").date()
@@ -97,7 +102,7 @@ class DispatchService:
             elif "明天" in text:
                 values["business_date"] = self.clock().astimezone(self.timezone).date() + timedelta(days=1)
         except ValueError as exc:
-            raise RecoveryError("DISPATCH_DATE_INVALID", "日期无效", 422) from exc
+            raise RecoveryError("DISPATCH_DATE_INVALID", "Invalid delivery date", 422) from exc
         if values.get("business_date", context.business_date) != context.business_date:
             context = DispatchContext(business_date=values["business_date"], **{k: v for k, v in (explicit or {}).items() if k != "business_date"})
         labels = {"order_id": r"(?:order_id|订单)(?:\s*ID)?",
@@ -108,7 +113,7 @@ class DispatchService:
         for key, label in labels.items():
             matches = re.findall(label + r"\s*[:：=]?\s*(" + UUID_PATTERN + r")", text, re.I)
             if len(set(matches)) > 1:
-                raise RecoveryError("DISPATCH_ENTITY_AMBIGUOUS", "同一类型对象出现多个 ID，请明确选择", 422)
+                raise RecoveryError("DISPATCH_ENTITY_AMBIGUOUS", "Multiple IDs of the same type were supplied; select one", 422)
             if matches:
                 values[key] = UUID(matches[0])
         return self._merge_context(context, values)
@@ -127,11 +132,11 @@ class DispatchService:
     @staticmethod
     def _missing(action, context):
         if action in ("get_delivery_status", "get_resource_availability", "explain_risk_alert") and not context.business_date:
-            return "请提供配送日期，例如 2026-09-25。"
+            return "Provide a delivery date, for example 2026-09-25."
         if action in ("get_recovery_proposal", "compare_plan_versions") and not context.recovery_plan_id:
-            return "请提供 recovery_plan_id；不会猜测候选或恢复尝试。"
+            return "Please select a recovery option first so I can show the right proposal."
         if action == "explain_risk_alert" and not (context.order_id or context.alert_id):
-            return "请提供明确的 order_id 或 alert_id；不会根据同名对象猜测 ID。"
+            return "Please select an order or alert so I can explain the right risk."
         return None
 
     def _reply(self, status, message, context, observations, source, subject, pending_actions=(),

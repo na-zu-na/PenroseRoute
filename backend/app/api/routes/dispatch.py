@@ -28,7 +28,7 @@ def get_dispatch_service(request: Request):
     settings = get_settings()
     if not settings.dispatch_context_secret or len(settings.dispatch_context_secret.get_secret_value()) < 32:
         from app.core.errors import AuthenticationError
-        raise AuthenticationError("DISPATCH_NOT_CONFIGURED", "请设置至少 32 字符的上下文签名密钥", 503)
+        raise AuthenticationError("DISPATCH_NOT_CONFIGURED", "Configure a context-signing secret of at least 32 characters", 503)
     from app.db.session import SessionLocal
     planner = None
     if settings.dispatch_intent_provider == "ark" and settings.ark_api_key:

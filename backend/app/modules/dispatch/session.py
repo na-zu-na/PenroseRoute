@@ -37,4 +37,4 @@ class ContextCodec:
             return (DispatchContext.model_validate(data["context"]),
                     IntentPlan(actions=tuple(data.get("pending_actions", ()))).actions)
         except Exception as exc:
-            raise RecoveryError("CONTEXT_TOKEN_INVALID", "上下文已过期或不属于当前用户，请重新选择日期和方案", 400) from exc
+            raise RecoveryError("CONTEXT_TOKEN_INVALID", "Context expired or belongs to another user; select the date and plan again", 400) from exc

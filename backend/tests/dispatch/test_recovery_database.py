@@ -1,4 +1,5 @@
 from datetime import timedelta
+import re
 from uuid import UUID, uuid4
 from sqlalchemy import select
 from app.db.models import DeliveryPlan, Incident, IncidentAffectedOrder, Order, RecoveryPlan, Vehicle, Driver, VehicleDriverAssignment, VehicleRoute, RouteStop
@@ -65,6 +66,9 @@ def test_real_recovery_persists_attempts_and_full_candidate(database):
     assert proposal["status"] == "PENDING_REVIEW"
     difference = queries.compare(UUID(reply.data["reviewable_recovery_plan_id"]))
     assert difference["reassigned_order_count"] == 1
+    prose = " ".join(fact["text"] for fact in proposal["facts"] + difference["facts"])
+    assert "reassign" in prose.lower() and "review" in prose.lower()
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T|[0-9a-f]{8}-[0-9a-f]{4}-|[{}]|NO_COMPARABLE|PENDING_REVIEW", prose, re.I)
 
 
 def test_handover_preserves_completed_pickup(database):
@@ -82,7 +86,7 @@ def test_handover_preserves_completed_pickup(database):
         assert delivery.precedence_stop_id == handover.id
         evidence = reply.data["recovery_evidence"]
         assert evidence["handover_order_ids"] == [str(delivery.order_id)]
-        assert any(str(delivery.order_id) in risk and "交接" in risk for risk in evidence["remaining_risks"])
+        assert any(str(delivery.order_id) in risk and "handover" in risk.lower() for risk in evidence["remaining_risks"])
         candidate = session.get(DeliveryPlan, candidate_id)
         for field, value in evidence["after"].items():
             assert getattr(candidate, field) == value

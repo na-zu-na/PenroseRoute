@@ -1,5 +1,6 @@
 """Independent examples for the business projection consumed by the Agent."""
 import json
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 from app.integrations.agent.contracts import SolverResult
@@ -127,7 +128,8 @@ def test_p1_evidence_is_an_adapter_over_u01_without_inventing_metrics():
     assert evidence.orders[0].eta_delta_seconds == 300
     assert evidence.orders[1].eta_unavailable_reason == "COMPLETED_DELIVERY"
     assert "NO_COMPARABLE_REMAINDER_SNAPSHOT" in text
-    assert "尚未生效" in structured.summary
+    assert "not active" in structured.summary
+    assert not re.search(r"[\u3400-\u9fff]", text)
 
 
 def test_p1_evidence_marks_non_reviewable_comparison_as_audit_only():
@@ -150,4 +152,4 @@ def test_p1_evidence_marks_non_reviewable_comparison_as_audit_only():
     evidence = evidence_from_plan_comparison(comparison)
 
     assert evidence.reviewable is False
-    assert any("只可审计" in risk for risk in evidence.remaining_risks)
+    assert any("audit-only" in risk for risk in evidence.remaining_risks)

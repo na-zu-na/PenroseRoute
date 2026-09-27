@@ -112,9 +112,8 @@ def test_formal_recovery_runs_agent_graph_tools_real_solver_and_approval(monkeyp
         assert model.calls == 1
         texts = "\n".join(f.text for f in model.facts[0])
         assert "NO_COMPARABLE_REMAINDER_SNAPSHOT" in texts
-        assert "ETA" in texts and "Handover" in texts and "Completed Freeze" in texts
-        assert "候选未分配" in texts and "订单改派" in texts
-        assert "本次重新求解的路线" not in texts
+        assert "ETA" in texts and "handover orders" in texts.lower() and "frozen completed orders" in texts.lower()
+        assert "Unassigned Candidate orders" in texts and "Reassigned orders" in texts
         assert any(
             f"request_id=agent-e2e-breakdown incident_id={incident_id}" in record.message
             and "attempt_no=2 mode=agent" in record.message

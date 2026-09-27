@@ -61,20 +61,20 @@ def evidence_from_plan_comparison(comparison):
     }))
     risks = []
     if not comparison.reviewable:
-        risks.append("基础计划或候选状态已变化；该比较只可审计，不再代表可审批候选。")
+        risks.append("The Base Plan or Candidate status changed; this comparison is audit-only and is no longer reviewable.")
     unavailable_eta = tuple(
         item for item in orders if item.eta_unavailable_reason is not None
     )
     if unavailable_eta:
-        risks.append("部分订单 ETA 不可比较；原因已按订单保存在确定性比较事实中。")
+        risks.append("Some order ETAs are not comparable; the deterministic comparison records each reason.")
     if comparison.remaining_metrics.reason:
         risks.append(
-            "剩余距离与时长不可比较："
-            f"{comparison.remaining_metrics.reason}。"
+            "Remaining distance and duration are not comparable: "
+            f"{comparison.remaining_metrics.reason}."
         )
     if handovers:
-        risks.append("货物交接尚待现场执行确认。")
-    risks.append("候选尚未批准，不能描述为当前执行计划。" if comparison.reviewable else "历史比较仅供审计，不代表当前计划或仍可审批的候选。")
+        risks.append("Cargo handover still requires confirmation during execution.")
+    risks.append("The Candidate is not approved and is not the Current Plan." if comparison.reviewable else "This historical comparison is audit-only; it is neither the Current Plan nor a reviewable Candidate.")
     return RecoveryEvidence(
         source="P1_PLAN_COMPARISON",
         comparison_at=comparison.comparison_at,
@@ -116,50 +116,50 @@ def evidence_from_plan_comparison(comparison):
 
 def explanation_from_plan_comparison(evidence: RecoveryEvidence):
     """Render canonical comparison facts without asking a model to fill gaps."""
-    reassigned = "；".join(
+    reassigned = "; ".join(
         f"{item.order_id}: {item.from_vehicle_id} → {item.to_vehicle_id}"
         for item in evidence.reassigned_orders
-    ) or "无"
+    ) or "none"
     eta_parts = []
     for item in evidence.orders:
         if item.eta_delta_seconds is not None:
-            eta_parts.append(f"{item.order_id}: {item.eta_delta_seconds:+d} 秒")
+            eta_parts.append(f"{item.order_id}: {item.eta_delta_seconds:+d} seconds")
         elif item.eta_unavailable_reason:
             eta_parts.append(
-                f"{item.order_id}: 不可计算（{item.eta_unavailable_reason}）"
+                f"{item.order_id}: unavailable ({item.eta_unavailable_reason})"
             )
     metrics = evidence.remaining_metrics
     metrics_text = (
-        f"剩余距离/时长不可计算（{metrics.reason}）"
+        f"Remaining distance/duration unavailable ({metrics.reason})"
         if metrics and metrics.reason
         else (
-            "剩余距离变化 "
-            f"{metrics.delta_distance_meters} 米，时长变化 "
-            f"{metrics.delta_duration_seconds} 秒"
-            if metrics else "未提供剩余距离/时长事实"
+            "Remaining distance change "
+            f"{metrics.delta_distance_meters} meters; duration change "
+            f"{metrics.delta_duration_seconds} seconds"
+            if metrics else "No remaining distance/duration facts were provided"
         )
     )
     structured = RecoveryExplanation(
         summary=(
-            "U01 在同一 Base/Candidate 与 Attempt 记录时点生成比较；"
-            f"比较记录时点 {evidence.comparison_at}；"
-            + ("候选可审核，尚未生效。" if evidence.reviewable else "历史比较仅供审计，不代表当前状态。")
+            "U01 compared the same Base Plan and Candidate at the recorded Attempt time; "
+            f"comparison recorded at {evidence.comparison_at}. "
+            + ("The Candidate is reviewable but not active." if evidence.reviewable else "This historical comparison is audit-only and does not represent the current state.")
         ),
         impact_explanation=(
-            "Completed Freeze 订单："
-            f"{', '.join(map(str, evidence.frozen_completed_order_ids)) or '无'}；"
-            "Handover 订单："
-            f"{', '.join(map(str, evidence.handover_order_ids)) or '无'}。"
+            "Frozen completed orders: "
+            f"{', '.join(map(str, evidence.frozen_completed_order_ids)) or 'none'}; "
+            "handover orders: "
+            f"{', '.join(map(str, evidence.handover_order_ids)) or 'none'}."
         ),
         replanning_explanation=(
-            f"订单改派：{reassigned}；"
-            "保持不变的订单："
-            f"{', '.join(map(str, evidence.unchanged_order_ids)) or '无'}。"
+            f"Reassigned orders: {reassigned}; "
+            "unchanged orders: "
+            f"{', '.join(map(str, evidence.unchanged_order_ids)) or 'none'}."
         ),
         result_explanation=(
-            "候选未分配订单："
-            f"{', '.join(map(str, evidence.unassigned_order_ids)) or '无'}；"
-            f"ETA：{'；'.join(eta_parts) or '无可比较订单'}；{metrics_text}。"
+            "Unassigned Candidate orders: "
+            f"{', '.join(map(str, evidence.unassigned_order_ids)) or 'none'}; "
+            f"ETA: {'; '.join(eta_parts) or 'no comparable orders'}; {metrics_text}."
         ),
         remaining_risks=evidence.remaining_risks,
     )
@@ -168,7 +168,7 @@ def explanation_from_plan_comparison(evidence: RecoveryEvidence):
         structured.impact_explanation,
         structured.replanning_explanation,
         structured.result_explanation,
-        "剩余风险：" + "；".join(structured.remaining_risks),
+        "Remaining risks: " + "; ".join(structured.remaining_risks),
     ))
     return flat, structured
 
@@ -220,15 +220,15 @@ def project_evidence(input_json, result):
     reassigned = [{"order_id": key, "from_vehicle_id": old_assignment[key], "to_vehicle_id": new_assignment.get(key)}
                   for key in sorted(old_assignment) if old_assignment[key] != new_assignment.get(key)]
     unassigned = sorted(key for key, value in new_assignment.items() if value is None)
-    risks = ["距离、时长为地理估算，未接入道路和实时交通；可行性结论受输入快照与估算精度限制。"]
+    risks = ["Distance and duration are geographic estimates without road routing or live traffic; feasibility depends on the input snapshot and estimation accuracy."]
     if unassigned:
-        risks.append("候选仍保留原计划未分配订单：" + ", ".join(unassigned))
+        risks.append("The Candidate still contains unassigned Base Plan orders: " + ", ".join(unassigned))
     if handovers:
-        risks.append("货物交接尚待现场执行确认：" + ", ".join(sorted(handovers)))
+        risks.append("Cargo handover still requires confirmation during execution: " + ", ".join(sorted(handovers)))
     at_risk = [o["id"] for o in data["source_order_facts"] if o["risk_status"] == "AT_RISK" and o["execution_status"] != "COMPLETED"]
     if at_risk:
-        risks.append("输入快照中的风险标记尚未代表恢复后已解除：" + ", ".join(sorted(at_risk)))
-    risks.append("候选尚未批准，执行前需确认车辆位置、订单状态和交接条件仍与快照一致。")
+        risks.append("Risk flags in the input snapshot do not prove recovery resolved them: " + ", ".join(sorted(at_risk)))
+    risks.append("The Candidate is not approved; confirm vehicle locations, order status, and handover conditions before execution.")
     base = data["base_plan"]
     return RecoveryEvidence(
         reassigned_orders=tuple(reassigned), changed_order_ids=tuple(changed),
@@ -251,14 +251,14 @@ def comparison_explanation_facts(evidence, comparison=None):
         ExplanationFact(id="impact", text=sections.impact_explanation),
         ExplanationFact(id="replanning", text=sections.replanning_explanation),
         ExplanationFact(id="result", text=sections.result_explanation),
-        ExplanationFact(id="risks", text="剩余风险：" + "；".join(sections.remaining_risks)),
-        ExplanationFact(id="review", text=("候选必须经 Dispatcher 人工批准才能生效；当前计划尚未切换。" if evidence.reviewable else "本次历史比较不可用于批准；请查询当前计划和最新审核状态。")),
-        ExplanationFact(id="travel_source", text="ETA 基于计划停靠时间；行程采用地理距离与固定车速估算，未接入实时交通。"),
+        ExplanationFact(id="risks", text="Remaining risks: " + "; ".join(sections.remaining_risks)),
+        ExplanationFact(id="review", text=("The Candidate requires Dispatcher approval before activation; the Current Plan has not changed." if evidence.reviewable else "This historical comparison cannot be approved; check the Current Plan and latest review status.")),
+        ExplanationFact(id="travel_source", text="ETAs use planned stop times; travel uses geographic distance and fixed-speed estimates, not live traffic."),
     )
     if comparison is not None:
         facts += (ExplanationFact(id="provenance", text=(
-            f"Recovery {comparison.recovery_plan_id}；Base {comparison.base_plan_id}；"
-            f"Candidate {comparison.candidate_plan_id}；业务日期 {comparison.business_date}；"
-            f"比较时间口径 {comparison.comparison_time_basis}；记录时点 {comparison.comparison_at}。"
+            f"Recovery {comparison.recovery_plan_id}; Base {comparison.base_plan_id}; "
+            f"Candidate {comparison.candidate_plan_id}; business date {comparison.business_date}; "
+            f"comparison time basis {comparison.comparison_time_basis}; recorded at {comparison.comparison_at}."
         )),)
     return facts

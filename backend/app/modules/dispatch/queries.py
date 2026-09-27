@@ -1,6 +1,7 @@
 """Read-only projections. Sessions are closed before any Agent/model invocation."""
 from datetime import date, datetime, timezone
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -11,6 +12,29 @@ from app.db.repositories.plan_repository import PlanRepository
 
 def iso(value):
     return value.isoformat() if value else None
+
+
+def count_phrase(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def human_time(value: str | datetime | None) -> str | None:
+    if not value:
+        return None
+    try:
+        instant = datetime.fromisoformat(value) if isinstance(value, str) else value
+    except ValueError:
+        return None
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    local = instant.astimezone(ZoneInfo("Asia/Singapore"))
+    return f"{local.day} {local.strftime('%B')} at {local.strftime('%I:%M %p').lstrip('0')}"
+
+
+ALERT_REASONS = {
+    "PREDICTED_MISS": "the estimated arrival was at or after the delivery window closed",
+    "APPROACHING_WINDOW": "the estimated arrival was close to the end of the delivery window",
+}
 
 
 
@@ -37,10 +61,15 @@ class DispatchQueries:
                     "vehicle_status": str(v.status), "driver_status": str(d.status),
                     "location_id": str(v.current_location_id), "location_recorded_at": iso(v.current_location_recorded_at),
                     "idle": available, "on_current_plan": v.id in busy})
+            idle_count = sum(item["idle"] for item in items)
+            availability_text = (
+                f"I found {count_phrase(len(items), 'active vehicle-driver pair')}; "
+                + (f"{count_phrase(idle_count, 'pair')} currently {'appears' if idle_count == 1 else 'appear'} idle." if idle_count else "No pairs appear idle.")
+            ) if items else "No active vehicle-driver pairs are available. No pairs appear idle."
             return {"business_date": iso(business_date), "as_of": iso(at), "observed_at": iso(at),
-                "missing_reasons": [], "facts": [{"id": "resources", "text": f"资源读取时点 {at.isoformat()}：有效车人绑定 {len(items)} 组，空闲 {sum(x['idle'] for x in items)} 组；依据当前状态，不代表未来班次或剩余载重。"}],
-                "availability_basis": "有效车人绑定及当前状态，不代表未来班次或剩余载重",
-                "total": len(items), "idle_count": sum(x["idle"] for x in items),
+                "missing_reasons": [], "facts": [{"id": "resources", "text": f"{availability_text} This is based on current availability, not future shifts or remaining cargo capacity."}],
+                "availability_basis": "Active vehicle-driver pairs and current status; not future shifts or remaining load",
+                "total": len(items), "idle_count": idle_count,
                 "items": items[:100], "truncated": len(items) > 100}
 
     def operations(self, business_date: date):
@@ -60,8 +89,8 @@ class DispatchQueries:
                     "alert_reason_counts": alert_summary.reason_counts,
                     "alerts_as_of": iso(alert_summary.as_of),
                 }, business_date=business_date, missing=[error.code], facts=[
-                        {"id": "current_plan", "text": "所选日期没有 Current Plan；无法提供当前运营摘要。"},
-                        {"id": "alerts", "text": f"持久化活动提醒 {alert_summary.active_count} 条；活动提醒与运营快照 AT_RISK 是不同统计口径。"},
+                        {"id": "current_plan", "text": f"There is no active delivery plan for {business_date.strftime('%d %B %Y').lstrip('0')}, so I cannot summarize its routes or orders."},
+                        {"id": "alerts", "text": f"I can still see {count_phrase(alert_summary.active_count, 'active risk alert')}. Alert totals may differ from the number of at-risk orders."},
                     ])
         plan = data["current_plan"]
         data["unfinished_order_count"] = data["orders"]["total"] - data["orders"]["completed"]
@@ -70,11 +99,25 @@ class DispatchQueries:
             alert_reason_counts=alert_summary.reason_counts,
             alerts_as_of=iso(alert_summary.as_of),
         )
+        unfinished = data["unfinished_order_count"]
+        at_risk = data["orders"]["at_risk"]
+        incidents = data["open_incidents"]
+        reviews = data["pending_recovery_reviews"]
+        operations_text = (
+            f"{count_phrase(unfinished, 'order')} {'remains' if unfinished == 1 else 'remain'} unfinished. "
+            + (f"{count_phrase(at_risk, 'order')} may miss {'its delivery window' if at_risk == 1 else 'their delivery windows'}." if at_risk else "No orders are currently at risk.")
+        )
+        review_text = (
+            (f"{count_phrase(incidents, 'incident')} still {'needs' if incidents == 1 else 'need'} attention" if incidents else "No unresolved incidents need attention")
+            + ", and "
+            + (f"{count_phrase(reviews, 'recovery option')} {'awaits' if reviews == 1 else 'await'} dispatcher review" if reviews else "no recovery options need review")
+            + (". Proposed changes are not active yet." if reviews else ".")
+        )
         return self._envelope(data, business_date=business_date, facts=[
-            {"id": "current_plan", "text": f"业务日期 {business_date}，Current Plan {plan['delivery_plan_id']}，版本 {plan['version_no']}。", "plan_id": plan["delivery_plan_id"]},
-            {"id": "operations", "text": f"运营计算时点 {data['calculated_at']}：未完成订单 {data['unfinished_order_count']}，运营快照 AT_RISK {data['orders']['at_risk']}。", "plan_id": plan["delivery_plan_id"]},
-            {"id": "reviews", "text": f"未解决 Incident {data['open_incidents']}，待审核 Candidate {data['pending_recovery_reviews']}；候选尚未生效。", "plan_id": plan["delivery_plan_id"]},
-            {"id": "alerts", "text": f"持久化活动提醒 {alert_summary.active_count} 条，原因分布 {alert_summary.reason_counts}；运营快照 AT_RISK 与活动提醒数是不同统计口径。"},
+            {"id": "current_plan", "text": f"For {business_date.strftime('%d %B %Y').lstrip('0')}, delivery plan version {plan['version_no']} is in use.", "plan_id": plan["delivery_plan_id"]},
+            {"id": "operations", "text": operations_text, "plan_id": plan["delivery_plan_id"]},
+            {"id": "reviews", "text": review_text, "plan_id": plan["delivery_plan_id"]},
+            {"id": "alerts", "text": f"There are {count_phrase(alert_summary.active_count, 'active risk alert')}. Alert totals and at-risk order totals can differ."},
         ])
 
     def proposal(self, recovery_id: UUID):
@@ -82,23 +125,55 @@ class DispatchQueries:
         from app.modules.recovery.queries import RecoveryQueryService
         with self.sessions() as session:
             data = jsonable_encoder(RecoveryQueryService(session).get_attempt(recovery_id))
+        if data["candidate_delivery_plan_id"] is None:
+            reason = {"INFEASIBLE": "no feasible route was found", "ERROR": "the route calculation failed"}.get(data["solver_status"], "the result was not valid for review")
+            message = f"This recovery attempt did not produce an option for review because {reason}. The current plan has not changed."
+        elif data["status"] == "PENDING_REVIEW":
+            message = "A recovery option is ready for dispatcher review. It has not replaced the current plan."
+        else:
+            decision = {"APPROVE": "approved", "REJECT": "rejected", "MODIFY": "sent back for another attempt"}.get(data["dispatcher_decision"])
+            message = f"The dispatcher {decision} this recovery option." if decision else "This recovery option is not awaiting review."
+        scope = {"AFFECTED_ROUTE": "the affected route", "CROSS_ROUTE": "multiple routes", "ALL_REMAINING": "all remaining work"}.get(data["replanning_scope"])
+        if scope:
+            message += f" The attempt considered {scope}."
         return self._envelope(data, facts=[{
             "id": "recovery", "recovery_plan_id": str(recovery_id),
             "plan_id": data["candidate_delivery_plan_id"],
-            "text": f"Recovery {recovery_id}：状态 {data['status']}，范围 {data['replanning_scope']}，审批决定 {data['dispatcher_decision']}。历史解释仅对应生成时点，不能代表当前可审批状态。",
+            "text": message,
         }])
 
     def compare(self, recovery_id: UUID):
         from dataclasses import asdict
         from fastapi.encoders import jsonable_encoder
         from app.modules.planning.comparison import PlanComparisonService
-        from app.modules.recovery.evidence import evidence_from_plan_comparison, comparison_explanation_facts
         with self.sessions() as session:
             comparison = PlanComparisonService(session).compare_recovery(recovery_id)
             data = jsonable_encoder(asdict(comparison))
-            facts = comparison_explanation_facts(evidence_from_plan_comparison(comparison), comparison)
+        reassigned = comparison.reassigned_order_count
+        frozen = len(comparison.frozen_completed_order_ids)
+        handovers = len({stop.order_id for stop in comparison.stop_changes if stop.stop_type == "HANDOVER" and stop.change_type != "REMOVED"})
+        eta_unknown = sum(order.eta_unavailable_reason is not None for order in comparison.orders)
+        facts = [
+            {"id": "assignments", "text": f"Compared with the original plan, this option reassigns {count_phrase(reassigned, 'order')}."},
+        ]
+        if frozen:
+            facts.append({"id": "completed", "text": f"{count_phrase(frozen, 'completed order')} {'remains' if frozen == 1 else 'remain'} protected from changes."})
+        if handovers:
+            facts.append({"id": "handover", "text": f"{count_phrase(handovers, 'order')} {'requires' if handovers == 1 else 'require'} a cargo handover before delivery can continue."})
+        if eta_unknown:
+            facts.append({"id": "eta", "text": f"The delivery-time change cannot be compared reliably for {count_phrase(eta_unknown, 'order')}."})
+        metrics = comparison.remaining_metrics
+        if metrics.delta_distance_meters is None or metrics.delta_duration_seconds is None:
+            facts.append({"id": "travel", "text": "The remaining distance and travel time cannot be compared reliably from the available snapshots."})
+        else:
+            distance = abs(metrics.delta_distance_meters) / 1000
+            minutes = abs(metrics.delta_duration_seconds) / 60
+            distance_direction = "longer" if metrics.delta_distance_meters > 0 else "shorter" if metrics.delta_distance_meters < 0 else "unchanged"
+            duration_direction = "longer" if metrics.delta_duration_seconds > 0 else "shorter" if metrics.delta_duration_seconds < 0 else "unchanged"
+            facts.append({"id": "travel", "text": f"The remaining route is {distance:.1f} km {distance_direction} and about {minutes:.0f} minutes {duration_direction}."})
+        facts.append({"id": "review", "text": "This option can be reviewed, but only dispatcher approval can make it active." if comparison.reviewable else "This is a historical comparison, not an option that can still be approved."})
         return self._envelope(data, business_date=comparison.business_date, facts=[{
-            "id": fact.id, "text": fact.text, "recovery_plan_id": str(recovery_id),
+            "id": fact["id"], "text": fact["text"], "recovery_plan_id": str(recovery_id),
             "plan_id": str(comparison.candidate_plan_id), "comparison_at": data["comparison_at"],
         } for fact in facts])
 
@@ -120,7 +195,7 @@ class DispatchQueries:
             if not alerts:
                 raise RecoveryError(
                     "ALERT_NOT_FOUND",
-                    f"未找到业务日期 {business_date} 下匹配的活动或历史提醒。",
+                    f"No active or historical alert matches business date {business_date} and the selected ID.",
                     404,
                 )
 
@@ -130,17 +205,24 @@ class DispatchQueries:
                 item = jsonable_encoder(asdict(alert))
                 item["changes"] = jsonable_encoder([asdict(change) for change in changes])
                 items.append(item)
+                initial = next((change.evidence_snapshot for change in changes if change.change_type == "CREATED"), alert.evidence)
+                reason = ALERT_REASONS.get(initial.get("reason_category"), "a delivery-window risk was detected")
                 facts.append({
                     "id": f"alert:{alert.id}:status",
                     "order_id": str(alert.order_id), "alert_id": str(alert.id),
-                    "text": f"提醒 {alert.id} 当前状态 {alert.status}，检测于 {alert.detected_at.isoformat()}，最近评估于 {alert.last_evaluated_at.isoformat()}。",
+                    "text": f"This order received a delivery-window alert because {reason}. The alert is {'still active' if alert.status == 'ACTIVE' else 'now resolved'}.",
                 })
-                for change in changes:
+                arrival = human_time(initial.get("estimated_arrival_at"))
+                deadline = human_time(initial.get("delivery_window_end_at"))
+                if arrival and deadline:
                     facts.append({
-                        "id": f"alert:{alert.id}:change:{change.change_id}",
+                        "id": f"alert:{alert.id}:timing",
                         "order_id": str(alert.order_id), "alert_id": str(alert.id),
-                        "text": f"提醒变更 {change.change_type}（{change.recorded_at.isoformat()}）：持久化证据快照 {change.evidence_snapshot}。",
+                        "text": f"At the time, arrival was estimated for {arrival}, while the delivery window closed on {deadline} (Singapore time).",
                     })
+                if len(changes) > 1:
+                    facts.append({"id": f"alert:{alert.id}:history", "order_id": str(alert.order_id),
+                        "alert_id": str(alert.id), "text": f"The alert has {len(changes)} recorded changes, including its latest {'resolution' if alert.status == 'RESOLVED' else 'assessment'}."})
 
         return self._envelope({
             "order_id": str(order_id) if order_id else None,
