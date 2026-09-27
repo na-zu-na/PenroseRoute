@@ -6,11 +6,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    dispatch_intent_provider: Literal["rules", "bedrock"] = "rules"
+    dispatch_intent_provider: Literal["rules", "bedrock", "ark"] = "ark"
     dispatch_api_tokens: SecretStr | None = None
     dispatch_context_secret: SecretStr | None = None
     business_timezone: str = "Asia/Singapore"
-    agent_explanation_provider: Literal["template", "bedrock"] = "template"
+    agent_explanation_provider: Literal["template", "bedrock", "ark"] = "ark"
+    ark_api_key: SecretStr | None = None
+    ark_model_id: str = "deepseek-v4-flash-ga-260731"
+    ark_timeout_seconds: int = Field(default=1800, gt=0)
     recovery_orchestration_mode: Literal["deterministic", "agent"] = "deterministic"
     bedrock_model_id: str | None = None
     bedrock_endpoint_url: str | None = None

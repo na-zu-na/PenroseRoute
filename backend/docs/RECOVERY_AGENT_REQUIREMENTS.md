@@ -100,7 +100,7 @@
 
 ## 模型接入
 
-默认 `AGENT_EXPLANATION_PROVIDER=template`，无需模型凭据。使用 Bedrock 时：
+默认 `AGENT_EXPLANATION_PROVIDER=ark`；未配置 `ARK_API_KEY` 时回退模板，无需模型凭据也可运行。正式 Recovery 使用 Agent 编排时还需设置 `RECOVERY_ORCHESTRATION_MODE=agent`。方舟配置见 `.env.example`。使用 Bedrock 时：
 
 ```dotenv
 AGENT_EXPLANATION_PROVIDER=bedrock
@@ -113,7 +113,7 @@ AGENT_READ_TIMEOUT_SECONDS=10
 
 认证使用 AWS SDK 凭据链；若所用 SDK/服务支持 Bedrock API Key，可以在进程环境导出 `AWS_BEARER_TOKEN_BEDROCK`。此变量由 SDK 读取，仅写进应用 `.env` 不保证导出给 SDK。无需将密钥传入 Recovery Context、模型提示词或 HTTP 请求体。本客户端是 Bedrock Converse 协议，不是任意 OpenAI-compatible endpoint。
 
-模型只能返回已知事实 ID 的排序；重复 ID、未知 ID、格式错误、超时、凭据或初始化失败均回退模板。模型遗漏的事实会由代码补回。结构化数值和业务状态全部来自确定性组件。
+模型只能返回已知事实 ID 的排序；重复 ID、未知 ID、遗漏 ID、格式错误、超时、凭据或初始化失败均回退模板。结构化数值和业务状态全部来自确定性组件。
 
 ## 验证及限制
 

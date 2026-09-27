@@ -64,9 +64,10 @@ def operations_client() -> Iterator[tuple[httpx.AsyncClient, Session]]:
         connection.close()
 
 
-def seed_current_operation(session: Session) -> dict[str, UUID | date]:
+def seed_current_operation(
+    session: Session, business_date: date = date(2026, 10, 3)
+) -> dict[str, UUID | date]:
     suffix = uuid4().hex[:8]
-    business_date = date(2026, 10, 3)
     depot = Location(
         id=uuid4(),
         location_code=f"T11-DEPOT-{suffix}",
@@ -299,6 +300,107 @@ def test_operations_queries_are_scoped_to_current_plan() -> None:
             assert missing.json()["code"] == "CURRENT_PLAN_NOT_FOUND"
 
         asyncio.run(scenario())
+
+
+def test_dashboard_reports_measured_on_time_and_destination_region() -> None:
+    with operations_client() as (client, session):
+        ids = seed_current_operation(session)
+
+        async def dashboard():
+            response = await client.get(
+                "/api/operations/dashboard",
+                params={"business_date": str(ids["business_date"])},
+            )
+            assert response.status_code == 200, response.text
+            return response.json()["data"]
+
+        initial = asyncio.run(dashboard())
+        assert initial["on_time"] == {
+            "on_time_deliveries": 0,
+            "measured_deliveries": 0,
+            "rate": None,
+        }
+        assert initial["regions"] == [{
+            "region": "CENTRAL REGION",
+            "orders": 1,
+            "completed": 0,
+            "at_risk": 0,
+            "vehicles": 1,
+            "routes": 1,
+            "on_time_rate": None,
+        }]
+        assert initial["trends"]["comparison_business_date"] != str(ids["business_date"])
+
+        order = session.get(Order, ids["order_id"])
+        stop = session.get(RouteStop, ids["delivery_stop_id"])
+        order.execution_status = OrderExecutionStatus.COMPLETED
+        stop.status = StopStatus.COMPLETED
+        stop.actual_arrival_at = datetime(2026, 10, 3, 10, 31, tzinfo=timezone.utc)
+        stop.actual_departure_at = datetime(2026, 10, 3, 10, 35, tzinfo=timezone.utc)
+        session.commit()
+
+        late = asyncio.run(dashboard())
+        assert late["on_time"] == {
+            "on_time_deliveries": 0,
+            "measured_deliveries": 1,
+            "rate": 0.0,
+        }
+        assert late["regions"][0]["on_time_rate"] == 0.0
+
+
+def test_dashboard_trends_compare_previous_available_business_date() -> None:
+    with operations_client() as (client, session):
+        previous = seed_current_operation(session, date(2026, 10, 2))
+        current = seed_current_operation(session, date(2026, 10, 3))
+        for ids, arrival in (
+            (previous, datetime(2026, 10, 3, 10, 31, tzinfo=timezone.utc)),
+            (current, datetime(2026, 10, 3, 10, 20, tzinfo=timezone.utc)),
+        ):
+            session.get(Order, ids["order_id"]).execution_status = OrderExecutionStatus.COMPLETED
+            stop = session.get(RouteStop, ids["delivery_stop_id"])
+            stop.status = StopStatus.COMPLETED
+            stop.actual_arrival_at = arrival
+            stop.actual_departure_at = arrival.replace(minute=arrival.minute + 1)
+        session.commit()
+
+        async def dashboard():
+            response = await client.get(
+                "/api/operations/dashboard",
+                params={"business_date": "2026-10-03"},
+            )
+            assert response.status_code == 200, response.text
+            return response.json()["data"]
+
+        data = asyncio.run(dashboard())
+        assert data["on_time"]["rate"] == 100.0
+        assert data["trends"] == {
+            "comparison_business_date": "2026-10-02",
+            "orders_delta": 0,
+            "vehicles_delta": 0,
+            "on_time_rate_delta_points": 100.0,
+            "open_incidents_delta": 0,
+        }
+
+
+def test_dashboard_without_prior_plan_has_no_invented_trend() -> None:
+    with operations_client() as (client, session):
+        ids = seed_current_operation(session, date(2000, 1, 1))
+
+        async def dashboard():
+            response = await client.get(
+                "/api/operations/dashboard",
+                params={"business_date": str(ids["business_date"])},
+            )
+            assert response.status_code == 200, response.text
+            return response.json()["data"]
+
+        assert asyncio.run(dashboard())["trends"] == {
+            "comparison_business_date": None,
+            "orders_delta": None,
+            "vehicles_delta": None,
+            "on_time_rate_delta_points": None,
+            "open_incidents_delta": None,
+        }
 
 
 def test_simulated_positions_are_read_only_and_scoped_to_current_plan() -> None:

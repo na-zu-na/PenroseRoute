@@ -23,6 +23,7 @@ from app.db.models.resources import (
     OrderRiskStatus,
 )
 from app.db.repositories.plan_repository import PlanRepository
+from app.modules.operations.regions import destination_region
 from app.modules.operations.risk import RiskService
 
 
@@ -48,6 +49,33 @@ class CountView:
 
 
 @dataclass(frozen=True)
+class OnTimeView:
+    on_time_deliveries: int
+    measured_deliveries: int
+    rate: float | None
+
+
+@dataclass(frozen=True)
+class RegionView:
+    region: str
+    orders: int
+    completed: int
+    at_risk: int
+    vehicles: int
+    routes: int
+    on_time_rate: float | None
+
+
+@dataclass(frozen=True)
+class TrendView:
+    comparison_business_date: date | None
+    orders_delta: int | None
+    vehicles_delta: int | None
+    on_time_rate_delta_points: float | None
+    open_incidents_delta: int | None
+
+
+@dataclass(frozen=True)
 class OperationsDashboardView:
     current_plan: CurrentPlanView
     orders: CountView
@@ -57,6 +85,9 @@ class OperationsDashboardView:
     open_incidents: int
     pending_recovery_reviews: int
     calculated_at: datetime
+    on_time: OnTimeView
+    regions: list[RegionView]
+    trends: TrendView
 
 
 @dataclass(frozen=True)
@@ -118,6 +149,14 @@ class OperationsQueryService:
         now = datetime.now(timezone.utc)
         orders = self._order_views(plan, now)
         routes = list(plan.routes)
+        on_time, outcomes = self._on_time(plan)
+        regions = self._regions(plan, orders, outcomes)
+        previous_date = self.plans.previous_current_business_date(business_date)
+        previous = (self.plans.get_current_plan_for_operations(previous_date)
+                    if previous_date is not None else None)
+        previous_rate = self._on_time(previous)[0].rate if previous is not None else None
+        previous_open = (sum(item.status is not IncidentStatus.RESOLVED
+                             for item in previous.incidents) if previous is not None else None)
         vehicles = [route.vehicle for route in routes]
         drivers = [route.driver for route in routes]
         merchants = {
@@ -181,7 +220,71 @@ class OperationsQueryService:
                 for recovery in incident.recovery_plans
             ),
             calculated_at=now,
+            on_time=on_time,
+            regions=regions,
+            trends=TrendView(
+                comparison_business_date=previous_date,
+                orders_delta=len(orders) - len(previous.plan_orders) if previous is not None else None,
+                vehicles_delta=len(routes) - len(previous.routes) if previous is not None else None,
+                on_time_rate_delta_points=(round(on_time.rate - previous_rate, 1)
+                                           if on_time.rate is not None and previous_rate is not None else None),
+                open_incidents_delta=len(open_incidents) - previous_open if previous_open is not None else None,
+            ),
         )
+
+    @staticmethod
+    def _on_time(plan) -> tuple[OnTimeView, dict[UUID, bool]]:
+        if plan is None:
+            return OnTimeView(0, 0, None), {}
+        outcomes: dict[UUID, bool] = {}
+        eligible = {membership.order_id for membership in plan.plan_orders}
+        for route in plan.routes:
+            for stop in route.stops:
+                if (stop.stop_type is StopType.DELIVERY
+                        and stop.order_id in eligible
+                        and stop.status is StopStatus.COMPLETED
+                        and stop.actual_arrival_at is not None
+                        and stop.order.execution_status is OrderExecutionStatus.COMPLETED):
+                    deadline = stop.time_window_end_at or stop.order.delivery_window_end_at
+                    outcomes[stop.order_id] = stop.actual_arrival_at <= deadline
+        measured = len(outcomes)
+        on_time = sum(outcomes.values())
+        return OnTimeView(on_time, measured, round(100 * on_time / measured, 1) if measured else None), outcomes
+
+    @staticmethod
+    def _regions(plan, orders: list[OperationOrderView], outcomes: dict[UUID, bool]) -> list[RegionView]:
+        risk_by_id = {item.order_id: item.risk_status for item in orders}
+        route_by_id = {route.id: route for route in plan.routes}
+        grouped: dict[str, dict] = {}
+        for membership in plan.plan_orders:
+            order = membership.order
+            location = order.delivery_location
+            region = destination_region(float(location.longitude), float(location.latitude))
+            if region is None:
+                continue
+            group = grouped.setdefault(region, {
+                "orders": 0, "completed": 0, "at_risk": 0,
+                "vehicles": set(), "routes": set(), "measured": 0, "on_time": 0,
+            })
+            group["orders"] += 1
+            group["completed"] += order.execution_status is OrderExecutionStatus.COMPLETED
+            group["at_risk"] += risk_by_id.get(order.id) == OrderRiskStatus.AT_RISK
+            if membership.vehicle_route_id is not None:
+                group["routes"].add(membership.vehicle_route_id)
+                group["vehicles"].add(route_by_id[membership.vehicle_route_id].vehicle_id)
+            if order.id in outcomes:
+                group["measured"] += 1
+                group["on_time"] += outcomes[order.id]
+        return [
+            RegionView(
+                region=name, orders=data["orders"], completed=data["completed"],
+                at_risk=data["at_risk"], vehicles=len(data["vehicles"]),
+                routes=len(data["routes"]),
+                on_time_rate=(round(100 * data["on_time"] / data["measured"], 1)
+                              if data["measured"] else None),
+            )
+            for name, data in sorted(grouped.items())
+        ]
 
     def list_orders(
         self,

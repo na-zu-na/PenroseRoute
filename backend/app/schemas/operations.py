@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -44,6 +44,36 @@ class MerchantOperationCounts(BaseModel):
     delayed: int
 
 
+class OnTimeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    on_time_deliveries: int
+    measured_deliveries: int
+    rate: float | None
+
+
+class RegionOperationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    region: str
+    orders: int
+    completed: int
+    at_risk: int
+    vehicles: int
+    routes: int
+    on_time_rate: float | None
+
+
+class OperationTrendResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    comparison_business_date: date | None
+    orders_delta: int | None
+    vehicles_delta: int | None
+    on_time_rate_delta_points: float | None
+    open_incidents_delta: int | None
+
+
 class OperationsDashboardResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,6 +85,9 @@ class OperationsDashboardResponse(BaseModel):
     open_incidents: int
     pending_recovery_reviews: int
     calculated_at: datetime
+    on_time: OnTimeResponse
+    regions: list[RegionOperationResponse]
+    trends: OperationTrendResponse
 
 
 class OperationOrderResponse(BaseModel):

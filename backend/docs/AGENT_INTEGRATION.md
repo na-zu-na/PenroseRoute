@@ -4,7 +4,7 @@
 
 ## 分层
 
-- `integrations/agent`：恢复 DTO、LangGraph、三种受控工具、Bedrock 事实排序及模板回退。没有数据库访问。
+- `integrations/agent`：恢复 DTO、LangGraph、三种受控工具、火山方舟／可选 Bedrock 事实排序及模板回退。没有数据库访问。
 - `modules/incidents`：显式异常上报、确定性影响规则与范围升级。
 - `modules/recovery/context.py`：防御校验 600 秒门槛、完成及交接标志。
 - `modules/recovery/orchestration.py`：绑定已物化输入、求解器、独立 validator。
