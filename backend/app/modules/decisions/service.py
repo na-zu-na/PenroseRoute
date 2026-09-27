@@ -107,9 +107,26 @@ class DeterministicDecisionService:
         if decision not in ("APPROVE", "REJECT") or not reason.strip():
             raise BusinessError(code="DECISION_INVALID", message="A decision reason is required")
         with self.sessions() as session, session.begin():
-            recovery, base, candidate, incident = self._lock_reviewable(session, recovery_id)
+            recovery, base, candidate, incident = self._lock_reviewable(session, recovery_id, validate_facts=decision == "APPROVE")
             now = self.clock()
             if decision == "APPROVE":
+                option = (recovery.solver_validation_summary or {}).get("options")
+                if option:
+                    from app.core.errors import Conflict
+                    from app.db.repositories.plan_repository import PlanRepository
+                    from app.modules.recovery.deterministic_context import materialize_recovery_context
+                    from app.modules.recovery.review_schedule import review_deadline
+                    full = PlanRepository(session).get_plan_with_routes(candidate.id)
+                    context = materialize_recovery_context(session, incident_id=incident.id,
+                        scope=recovery.replanning_scope,
+                        operational_time=datetime.fromisoformat(option["operational_time"]))
+                    # Recompute from facts for older persisted candidates too; an
+                    # arrival deadline alone omits the trip to the first new task.
+                    if now > review_deadline(context, full) or any(stop.planned_arrival_at < now for route in full.routes for stop in route.stops
+                           if stop.status != "COMPLETED" and stop.sequence_no >
+                           (route.route_metrics or {}).get("preserved_stop_count", 0)):
+                        raise Conflict(code="CANDIDATE_SCHEDULE_STALE",
+                                       message="Candidate schedule expired; regenerate options")
                 base.status = DeliveryPlanStatus.SUPERSEDED
                 base.superseded_at = now
                 session.flush()  # The partial unique CURRENT index must be released first.
@@ -125,6 +142,12 @@ class DeterministicDecisionService:
             recovery.decision_reason = reason.strip()
             recovery.reviewed_by = subject
             recovery.reviewed_at = now
+            closed = []
+            if (recovery.solver_validation_summary or {}).get("options"):
+                if decision == "APPROVE":
+                    closed = self._close_siblings(session, recovery, now, subject, "SELECTED_OTHER_OPTION")
+                elif self._pending_siblings(session, recovery):
+                    incident.status = IncidentStatus.REVIEW
             business_date = base.business_date
             result = {
                 "recovery_plan_id": str(recovery.id),
@@ -138,6 +161,7 @@ class DeterministicDecisionService:
                 "previous_delivery_plan_id": str(base.id),
                 "current_delivery_plan_id": str(candidate.id if decision == "APPROVE" else base.id),
                 "incident_status": incident.status.value,
+                "closed_alternative_ids": closed,
             }
         if decision == "APPROVE":
             with self.sessions() as refresh_source:
@@ -166,7 +190,8 @@ class DeterministicDecisionService:
                     message="No wider deterministic recovery scope is available",
                 )
             attempts = RecoveryRepository(session).get_recovery_attempts(incident.id)
-            if attempts[-1].id != recovery.id:
+            is_options = bool((recovery.solver_validation_summary or {}).get("options"))
+            if not is_options and attempts[-1].id != recovery.id:
                 raise Conflict(
                     code="RECOVERY_ALREADY_DECIDED",
                     message="A newer recovery attempt already exists",
@@ -178,12 +203,14 @@ class DeterministicDecisionService:
             recovery.decision_reason = reason.strip()
             recovery.reviewed_by = subject
             recovery.reviewed_at = now
+            if is_options:
+                self._close_siblings(session, recovery, now, subject, "REPLACED_BY_MODIFICATION")
             incident.status = IncidentStatus.REPLANNING
             next_attempt = RecoveryPlan(
                 id=uuid4(),
                 recovery_code=f"REC-{base.business_date:%Y%m%d}-{uuid4().hex[:12].upper()}",
                 incident_id=incident.id,
-                attempt_no=recovery.attempt_no + 1,
+                attempt_no=attempts[-1].attempt_no + 1,
                 previous_recovery_plan_id=recovery.id,
                 base_delivery_plan_id=base.id,
                 status=RecoveryPlanStatus.DRAFT,
@@ -198,10 +225,18 @@ class DeterministicDecisionService:
 
         # The decision is durable; routing and OR-Tools run without a DB transaction.
         with self.sessions() as session:
-            outcome = RecoveryWorkflow(
+            workflow_class = RecoveryWorkflow
+            if is_options:
+                from app.modules.recovery.options import RecoveryOptionsWorkflow
+                workflow_class = RecoveryOptionsWorkflow
+            outcome = workflow_class(
                 session, mode=self.recovery_mode,
                 explanation_client=self.explanation_client,
             ).resume(next_attempt_id, request_id=request_id)
+        if is_options:
+            return {**outcome, "decided_recovery_plan_id": str(old_attempt_id),
+                    "dispatcher_decision": "MODIFY",
+                    "cancelled_candidate_delivery_plan_id": str(old_candidate_id)}
         latest = outcome.attempts_created[-1]
         return {
             "decided_recovery_plan_id": str(old_attempt_id),
@@ -222,7 +257,7 @@ class DeterministicDecisionService:
         }
 
     @staticmethod
-    def _lock_reviewable(session, recovery_id):
+    def _lock_reviewable(session, recovery_id, *, validate_facts=False):
         from app.core.errors import Conflict, NotFound
         from app.db.models.planning import DeliveryPlanStatus, StopType, ValidationStatus
         from app.db.models.recovery import RecoveryPlanStatus, SolverStatus
@@ -230,6 +265,13 @@ class DeterministicDecisionService:
         from app.db.repositories.plan_repository import PlanRepository
         from app.db.repositories.recovery_repository import RecoveryRepository
 
+        # Serialize choices within an options batch BEFORE locking any individual
+        # candidate. Two dispatchers choosing different rows cannot deadlock.
+        probe = session.get(RecoveryPlan, recovery_id)
+        if probe is not None and (probe.solver_validation_summary or {}).get("options"):
+            from sqlalchemy import text
+            key = probe.incident_id.int % (2**63 - 1)
+            session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
         recovery = RecoveryRepository(session).lock_recovery_plan_for_decision(recovery_id)
         if recovery is None:
             raise NotFound(code="RECOVERY_NOT_FOUND", message="Recovery plan was not found")
@@ -291,4 +333,48 @@ class DeterministicDecisionService:
                 code="CANDIDATE_PLAN_INVALID",
                 message="Recovery candidate snapshot is inconsistent",
             )
+        option = (recovery.solver_validation_summary or {}).get("options")
+        if option and validate_facts:
+            from app.modules.recovery.deterministic_context import materialize_recovery_context
+            from app.modules.recovery.options import fingerprint
+            planning_time = datetime.fromisoformat(option["operational_time"])
+            context = materialize_recovery_context(session, incident_id=incident.id,
+                scope=recovery.replanning_scope, operational_time=planning_time)
+            plans.lock_recovery_execution_facts(base.id,
+                extra_vehicle_ids=tuple(v.vehicle_id for v in context.vehicles),
+                extra_driver_ids=tuple(v.driver_id for v in context.vehicles),
+                extra_assignment_ids=tuple(v.assignment_id for v in context.vehicles))
+            session.expire_all()
+            context = materialize_recovery_context(session, incident_id=incident.id,
+                scope=recovery.replanning_scope, operational_time=planning_time)
+            if fingerprint(context) != option["context_fingerprint"]:
+                raise Conflict(code="RECOVERY_CONTEXT_CHANGED",
+                               message="Operational facts changed; regenerate recovery options")
         return recovery, base, candidate, incident
+
+    @staticmethod
+    def _pending_siblings(session, recovery):
+        from app.db.models.recovery import RecoveryPlanStatus
+        return list(session.scalars(select(RecoveryPlan).where(
+            RecoveryPlan.incident_id == recovery.incident_id,
+            RecoveryPlan.id != recovery.id,
+            RecoveryPlan.status == RecoveryPlanStatus.PENDING_REVIEW,
+        ).order_by(RecoveryPlan.attempt_no).with_for_update()))
+
+    @classmethod
+    def _close_siblings(cls, session, selected, now, subject, closure):
+        from app.db.models.recovery import RecoveryPlanStatus, DispatcherDecision
+        from app.db.models.planning import DeliveryPlanStatus
+        closed = []
+        for sibling in cls._pending_siblings(session, selected):
+            plan = session.get(DeliveryPlan, sibling.candidate_delivery_plan_id)
+            plan.status = DeliveryPlanStatus.CANCELLED
+            sibling.status = RecoveryPlanStatus.DECIDED
+            sibling.dispatcher_decision = DispatcherDecision.REJECT
+            sibling.decision_reason = f"Automatically closed: {closure}; selected recovery {selected.id}"
+            sibling.reviewed_by = subject
+            sibling.reviewed_at = now
+            sibling.solver_validation_summary = {**(sibling.solver_validation_summary or {}),
+                "automatic_closure": closure, "selected_recovery_plan_id": str(selected.id)}
+            closed.append(str(sibling.id))
+        return closed

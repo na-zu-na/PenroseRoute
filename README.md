@@ -71,10 +71,19 @@ default 30-second scan cadence is not a delivery or notification SLA.
 
 `POST /api/agent/dispatch` 是正式只读入口，支持运营摘要、资源、Recovery 详情和按 Recovery ID 的 U01 比较。reader 与 dispatcher 均不能通过对话启动恢复、规划或审批。签名上下文支持缺参续问；配置 `ARK_API_KEY` 后默认使用火山方舟选择只读意图并排列可信解释事实，无 Key 时回退规则与模板。配置见 [P1 Agent 只读入口](backend/docs/P1_AGENT_READONLY_API.md)。
 
-正常规划使用 `POST /api/planning/generate`。异常恢复统一使用 `POST /api/incidents/{incident_id}/recovery`，由 `RECOVERY_ORCHESTRATION_MODE=deterministic|agent` 控制内部模式。候选必须经独立人工审批才能生效。
+正常规划使用 `POST /api/planning/generate`。单候选异常恢复使用 `POST /api/incidents/{incident_id}/recovery`，由 `RECOVERY_ORCHESTRATION_MODE=deterministic|agent` 控制内部模式。候选必须经独立人工审批才能生效。
 
 Agent 模式在 Candidate 持久化后才允许模型读取 U01 可信事实；模型只能返回事实 ID 的完整排列，失败回退模板。数据库事务结束后才调用模型。
 
 U06 已提供周期 Worker 和正式提醒只读接口（`GET /api/operations/alerts`、`GET /api/operations/alerts/changes`）。当前 Agent 的提醒解释尚未接入这些查询，相关请求仍返回 `ALERT_QUERY_UNAVAILABLE`；不要用订单风险标志代替活动提醒。
 
 最新配置、请求示例及调用时序见 [P1 Agent 只读 API](backend/docs/P1_AGENT_READONLY_API.md)。交付状态、测试和未完成依赖见 [P1 Agent Workstream](backend/docs/P1_AGENT_WORKSTREAM_STATUS.md)。旧 Dispatch/Recovery 文档保留原型设计，若存在差异以上述正式契约为准。
+
+
+## 多候选恢复与人工选择
+
+`POST /api/incidents/{incident_id}/recovery-options` 默认生成最多 3 个不同的可行恢复候选，
+返回优先级、排序指标和审核截止时间。使用同路径 GET 恢复页面状态，
+再按具体 Recovery ID 比较及批准方案。批准任意候选会原子关闭其他候选。
+旧单候选接口保持兼容，多候选入口采用确定性求解与规则排序，无需数据库迁移。
+前端接入、排序口径及重新生成规则见 [多候选恢复文档](backend/docs/RECOVERY_OPTIONS.md)。

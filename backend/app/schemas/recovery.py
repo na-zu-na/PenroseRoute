@@ -59,3 +59,30 @@ class RecoveryPlanDetailResponse(RecoveryAttemptSummary):
     reviewed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class RecoveryOptionMetrics(BaseModel):
+    unassigned_order_count: int
+    reassigned_order_count: int
+    changed_order_count: int
+    handover_count: int
+    completion_at: datetime
+
+
+class RecoveryOptionResponse(RecoveryPlanDetailResponse):
+    priority: int
+    strategy: str
+    ranking_reason: str
+    review_deadline_at: datetime | None = None
+    metrics: RecoveryOptionMetrics
+    reviewable: bool
+
+
+class RecoveryOptionsResponse(BaseModel):
+    incident_id: UUID
+    batch_id: str | None = None
+    outcome: str
+    candidates: list[RecoveryOptionResponse]
+    recommended_recovery_plan_id: UUID | None
+    ranking_policy: str | None
+    manual_intervention_required: bool

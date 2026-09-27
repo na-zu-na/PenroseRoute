@@ -28,7 +28,7 @@ class DispatchService:
         updates = command.context.model_dump(exclude_unset=True)
         if "business_date" in updates and updates["business_date"] != context.business_date:
             context = DispatchContext()
-        context = DispatchContext.model_validate({**context.model_dump(), **updates})
+        context = self._merge_context(context, updates)
         context = self._extract_context(command.message, context, updates)
         rules = RuleIntentPlanner().plan(command.message, context)
         if blocked_request(command.message) or (rules.clarification and any(w in command.message.lower() for w in ("不要", "别", "如果", "若", "do not", "don't", "if "))):
@@ -111,11 +111,17 @@ class DispatchService:
                 raise RecoveryError("DISPATCH_ENTITY_AMBIGUOUS", "同一类型对象出现多个 ID，请明确选择", 422)
             if matches:
                 values[key] = UUID(matches[0])
-        if "incident_id" in values and values["incident_id"] != context.incident_id:
-            context = context.model_copy(update={"recovery_plan_id": None, "candidate_plan_id": None})
-        if "recovery_plan_id" in values and values["recovery_plan_id"] != context.recovery_plan_id:
+        return self._merge_context(context, values)
+
+    @staticmethod
+    def _merge_context(context, updates):
+        # Invalidate inherited relationships before applying explicit selections.
+        if "incident_id" in updates and updates["incident_id"] != context.incident_id:
+            context = context.model_copy(update={"recovery_plan_id": None,
+                "base_plan_id": None, "candidate_plan_id": None})
+        if "recovery_plan_id" in updates and updates["recovery_plan_id"] != context.recovery_plan_id:
             context = context.model_copy(update={"base_plan_id": None, "candidate_plan_id": None})
-        return DispatchContext.model_validate({**context.model_dump(), **values})
+        return DispatchContext.model_validate({**context.model_dump(), **updates})
 
 
     @staticmethod
