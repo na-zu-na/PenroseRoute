@@ -1,7 +1,7 @@
 """Composition factory; callers provide real transaction, solver and validator adapters."""
 from collections.abc import Callable
 from app.core.config import Settings
-from app.integrations.agent.client import BedrockExplanationClient
+from app.integrations.agent.client import ArkExplanationClient, BedrockExplanationClient
 from app.integrations.agent.contracts import SolverResult, ValidationReport
 from .orchestration import RecoveryOrchestrator
 from .workflow import RecoveryApplication, RecoveryWorkflow
@@ -15,7 +15,10 @@ def create_recovery_workflow(
     evidence_projector=None,
 ) -> RecoveryWorkflow:
     client = None
-    if settings.agent_explanation_provider == "bedrock":
+    if settings.agent_explanation_provider == "ark" and settings.ark_api_key:
+        client = ArkExplanationClient(settings.ark_model_id, settings.ark_api_key.get_secret_value(),
+            timeout=settings.ark_timeout_seconds)
+    elif settings.agent_explanation_provider == "bedrock":
         if not settings.bedrock_model_id:
             raise ValueError("BEDROCK_MODEL_ID is required for the bedrock provider")
         client = BedrockExplanationClient(settings.bedrock_model_id, region_name=settings.aws_region,

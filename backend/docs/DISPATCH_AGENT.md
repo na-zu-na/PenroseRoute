@@ -38,8 +38,11 @@ python -m uvicorn app.main:app --reload
 ```dotenv
 DATABASE_URL=postgresql+psycopg://USER:PASSWORD@localhost:5432/penrose_route
 BUSINESS_TIMEZONE=Asia/Singapore
-DISPATCH_INTENT_PROVIDER=rules
-AGENT_EXPLANATION_PROVIDER=template
+DISPATCH_INTENT_PROVIDER=ark
+AGENT_EXPLANATION_PROVIDER=ark
+ARK_MODEL_ID=deepseek-v4-flash-ga-260731
+ARK_TIMEOUT_SECONDS=1800
+ARK_API_KEY=替换成自己的火山方舟API密钥
 DISPATCH_CONTEXT_SECRET=替换成至少32字符的随机字符串
 DISPATCH_API_TOKENS='{"替换成至少32字符的独立随机令牌":{"subject":"dispatcher-1","role":"dispatcher"}}'
 ```
@@ -50,7 +53,7 @@ DISPATCH_API_TOKENS='{"替换成至少32字符的独立随机令牌":{"subject":
 - `reader`：只能查询，无法生成或审核。
 - 当前凭据适用于**一个业务工作区**，不是多租户权限系统。以后可替换 `authenticate_dispatch_user` 接入 SSO。
 - 不配置凭据时返回 503，不会默认开放接口。
-- Bedrock 可选：设置 `DISPATCH_INTENT_PROVIDER=bedrock`、`BEDROCK_MODEL_ID`、`AWS_REGION`。恢复事实解释另由 `AGENT_EXPLANATION_PROVIDER` 控制。模型必须支持 Converse tool use；AWS 凭据使用标准凭据链。
+- 火山方舟使用 `Ark.chat.completions.create` 与深度思考模式，只能选只读意图和排列可信事实；无 `ARK_API_KEY` 时回退规则／模板。Bedrock 仍可通过 `DISPATCH_INTENT_PROVIDER=bedrock`、`AGENT_EXPLANATION_PROVIDER=bedrock` 等配置选用。
 
 ## 调度入口（仅单独挂载原型路由后）
 

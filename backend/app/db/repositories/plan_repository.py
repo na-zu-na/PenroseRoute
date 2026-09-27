@@ -1,5 +1,6 @@
-from datetime import date
 from uuid import UUID
+
+from datetime import date
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -68,6 +69,9 @@ class PlanRepository:
                 selectinload(DeliveryPlan.plan_orders)
                 .joinedload(DeliveryPlanOrder.order)
                 .joinedload(Order.merchant),
+                selectinload(DeliveryPlan.plan_orders)
+                .joinedload(DeliveryPlanOrder.order)
+                .joinedload(Order.delivery_location),
                 selectinload(DeliveryPlan.routes)
                 .joinedload(VehicleRoute.vehicle)
                 .joinedload(Vehicle.current_location),
@@ -220,6 +224,17 @@ class PlanRepository:
             .execution_options(populate_existing=True)
         )
         return self.session.scalar(statement)
+
+    def previous_current_business_date(self, business_date: date) -> date | None:
+        return self.session.scalar(
+            select(DeliveryPlan.business_date)
+            .where(
+                DeliveryPlan.business_date < business_date,
+                DeliveryPlan.status == DeliveryPlanStatus.CURRENT,
+            )
+            .order_by(DeliveryPlan.business_date.desc())
+            .limit(1)
+        )
 
     def lock_current_plan_for_alerts(self, business_date: date) -> DeliveryPlan | None:
         """Recheck after locking: approval may replace Current while we wait."""

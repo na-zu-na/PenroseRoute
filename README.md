@@ -69,7 +69,7 @@ default 30-second scan cadence is not a delivery or notification SLA.
 
 ## Agent 查询与异常恢复
 
-`POST /api/agent/dispatch` 是正式只读入口，支持运营摘要、资源、Recovery 详情和按 Recovery ID 的 U01 比较。reader 与 dispatcher 均不能通过对话启动恢复、规划或审批。签名上下文支持缺参续问，默认规则与模板，可选 Bedrock。
+`POST /api/agent/dispatch` 是正式只读入口，支持运营摘要、资源、Recovery 详情和按 Recovery ID 的 U01 比较。reader 与 dispatcher 均不能通过对话启动恢复、规划或审批。签名上下文支持缺参续问；配置 `ARK_API_KEY` 后默认使用火山方舟选择只读意图并排列可信解释事实，无 Key 时回退规则与模板。配置见 [P1 Agent 只读入口](backend/docs/P1_AGENT_READONLY_API.md)。
 
 正常规划使用 `POST /api/planning/generate`。单候选异常恢复使用 `POST /api/incidents/{incident_id}/recovery`，由 `RECOVERY_ORCHESTRATION_MODE=deterministic|agent` 控制内部模式。候选必须经独立人工审批才能生效。
 

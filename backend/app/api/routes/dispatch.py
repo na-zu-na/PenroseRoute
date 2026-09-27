@@ -8,7 +8,7 @@ from app.api.auth import Principal, authenticate_dispatch_user
 from app.core.config import get_settings
 from app.integrations.agent.contracts import RecoveryError
 from app.integrations.dispatch_agent.contracts import DispatchCommand
-from app.integrations.dispatch_agent.planner import BedrockIntentPlanner
+from app.integrations.dispatch_agent.planner import ArkIntentPlanner, BedrockIntentPlanner
 from app.modules.dispatch.queries import DispatchQueries
 from app.modules.dispatch.service import DispatchService
 from app.modules.dispatch.session import ContextCodec
@@ -31,7 +31,12 @@ def get_dispatch_service(request: Request):
         raise AuthenticationError("DISPATCH_NOT_CONFIGURED", "请设置至少 32 字符的上下文签名密钥", 503)
     from app.db.session import SessionLocal
     planner = None
-    if settings.dispatch_intent_provider == "bedrock":
+    if settings.dispatch_intent_provider == "ark" and settings.ark_api_key:
+        planner = ArkIntentPlanner(
+            settings.ark_model_id, settings.ark_api_key.get_secret_value(),
+            timeout=settings.ark_timeout_seconds,
+        )
+    elif settings.dispatch_intent_provider == "bedrock":
         if not settings.bedrock_model_id:
             planner = None
         else:

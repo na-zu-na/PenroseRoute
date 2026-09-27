@@ -10,6 +10,7 @@ dependencies = [
   "ortools>=9.15,<10",
   "langgraph>=1.2,<2",
   "boto3>=1.35,<2",
+  "volcengine-python-sdk[ark]>=5.0.50,<6",
   "fastapi>=0.115,<1",
   "ortools>=9.12,<10",
   "psycopg[binary]>=3.2,<4",
@@ -31,3 +32,6 @@ addopts = ["-p", "no:cacheprovider"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.modules.operations" = ["regions.json.gz"]

@@ -43,3 +43,36 @@ class BedrockExplanationClient:
         if len(calls) != 1 or calls[0]["name"] != "arrange_explanation":
             raise ValueError("Unexpected model tool call")
         return ExplanationOutline.model_validate(calls[0]["input"])
+
+
+class ArkExplanationClient:
+    """Ask Ark only to order trusted facts; never accept model-authored facts."""
+
+    def __init__(self, model_id: str, api_key: str, timeout: int = 1800, client=None):
+        self.model_id, self.api_key, self.timeout, self.client = model_id, api_key, timeout, client
+
+    def _client(self):
+        if self.client is None:
+            from volcenginesdkarkruntime import Ark
+            self.client = Ark(api_key=self.api_key, timeout=self.timeout, max_retries=0)
+        return self.client
+
+    def arrange(self, facts):
+        response = self._client().chat.completions.create(
+            model=self.model_id,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps([f.model_dump() for f in facts], ensure_ascii=False)},
+            ],
+            thinking={"type": "enabled"},
+            tools=[{"type": "function", "function": {
+                "name": "arrange_explanation",
+                "description": "Order the provided verified facts without changing them",
+                "parameters": ExplanationOutline.model_json_schema(),
+            }}],
+            tool_choice={"type": "function", "function": {"name": "arrange_explanation"}},
+        )
+        calls = response.choices[0].message.tool_calls or []
+        if len(calls) != 1 or calls[0].function.name != "arrange_explanation":
+            raise ValueError("Unexpected Ark tool call")
+        return ExplanationOutline.model_validate(json.loads(calls[0].function.arguments))

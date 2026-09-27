@@ -33,6 +33,14 @@ def get_recovery_explanation_client(mode: str = Depends(get_recovery_mode)):
     settings = get_settings()
     if mode != "agent" or settings.agent_explanation_provider == "template":
         return None
+    if settings.agent_explanation_provider == "ark":
+        if not settings.ark_api_key:
+            return None
+        from app.integrations.agent.client import ArkExplanationClient
+        return ArkExplanationClient(
+            settings.ark_model_id, settings.ark_api_key.get_secret_value(),
+            timeout=settings.ark_timeout_seconds,
+        )
     if not settings.bedrock_model_id:
         return None
     from app.integrations.agent.client import BedrockExplanationClient

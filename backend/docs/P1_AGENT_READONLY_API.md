@@ -7,12 +7,15 @@
 ```dotenv
 DISPATCH_API_TOKENS='{"YOUR_LONG_RANDOM_TOKEN":{"subject":"dispatcher-1","role":"dispatcher"}}'
 DISPATCH_CONTEXT_SECRET=YOUR_RANDOM_SECRET_AT_LEAST_32_CHARACTERS
-DISPATCH_INTENT_PROVIDER=rules
-AGENT_EXPLANATION_PROVIDER=template
+ARK_API_KEY=YOUR_PRIVATE_ARK_API_KEY
+ARK_MODEL_ID=deepseek-v4-flash-ga-260731
+ARK_TIMEOUT_SECONDS=1800
+DISPATCH_INTENT_PROVIDER=ark
+AGENT_EXPLANATION_PROVIDER=ark
 RECOVERY_ORCHESTRATION_MODE=deterministic
 ```
 
-reader 与 dispatcher 在对话入口都只能读取。模型为可选能力；无模型时规则和模板可以完整返回查询事实。Bedrock 接入沿用 BEDROCK_MODEL_ID、AWS_REGION 与 AWS 凭据链；Recovery 启用 Agent 需把 RECOVERY_ORCHESTRATION_MODE 改为 agent。
+安装后端依赖后，将真实 `ARK_API_KEY` 仅写入未跟踪的 `backend/.env`。方舟 SDK 使用 `Ark.chat.completions.create`、`thinking={"type":"enabled"}`，只返回白名单意图或可信事实 ID 排列；模型失败沿用规则／模板回退。`ARK_TIMEOUT_SECONDS=1800` 可能使同步 HTTP 请求等待很久，应同时检查部署层超时。reader 与 dispatcher 在对话入口都只能读取。无 Key 时仍可使用规则和模板；Recovery 启用 Agent 需把 `RECOVERY_ORCHESTRATION_MODE` 改为 `agent`。原 Bedrock 配置仍可选用。
 
 ## 对话请求
 
